@@ -1,0 +1,31 @@
+addr: "0.0.0.0:${QINIU_PLAYGROUND_HTTP_PORT:-19090}"
+
+# Database driver: "postgres" (default) or "mysql"
+driver: postgres
+dsn: "host=localhost port=5432 user=postgres password=postgres dbname=app sslmode=disable"
+
+auth:
+  # Generate with: openssl rand -base64 32
+  session_secret: "${QINIU_PLAYGROUND_SESSION_SECRET:-change-me-in-local-config}"
+  # Generate with: openssl rand -base64 32
+  encryption_key: "${QINIU_PLAYGROUND_ENCRYPTION_KEY:-change-me-in-local-config}"
+
+github:
+  oauth_client_id: "${GITHUB_OAUTH_CLIENT_ID:-}"
+  oauth_client_secret: "${GITHUB_OAUTH_CLIENT_SECRET:-}"
+  oauth_redirect_url: "${GITHUB_OAUTH_REDIRECT_URL:-http://localhost:19090/api/v1/auth/github/callback}"
+  app_id: "${GITHUB_APP_ID:-0}"
+  app_slug: "${GITHUB_APP_SLUG:-}"
+  app_private_key_path: "${GITHUB_APP_PRIVATE_KEY_PATH:-}"
+
+sandbox:
+  endpoint: "${QINIU_SANDBOX_ENDPOINT:-}"
+  default_template_id: "${QINIU_SANDBOX_TEMPLATE_ID:-base}"
+  default_timeout_seconds: 120
+
+# Environment variables are supported:
+# dsn: "${DATABASE_URL:-host=localhost port=5432 user=postgres password=postgres dbname=app sslmode=disable}"
+
+# MySQL example:
+# driver: mysql
+# dsn: "root:password@tcp(localhost:3306)/app?charset=utf8mb4&parseTime=True&loc=Local"

@@ -1,0 +1,354 @@
+package handler
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"path"
+	"strings"
+	"time"
+
+	qiniusb "github.com/qiniu/go-sdk/v7/sandbox"
+
+	"github.com/miclle/qiniu-playground/internal/config"
+)
+
+type sandboxRuntime interface {
+	ListTemplates(ctx context.Context, apiKey, endpoint string) ([]sandboxRuntimeTemplate, error)
+	Create(ctx context.Context, apiKey string, req sandboxRuntimeCreateRequest) (*sandboxRuntimeInfo, error)
+	Connect(ctx context.Context, apiKey, sandboxID string, timeoutSeconds int32, endpoint string) (*sandboxRuntimeInfo, error)
+	PrepareWorkspace(ctx context.Context, apiKey string, req sandboxRuntimeWorkspaceRequest) (*sandboxRuntimeWorkspace, error)
+	PrepareRepository(ctx context.Context, apiKey string, req sandboxRuntimeRepositoryRequest) (*sandboxRuntimeWorkspace, error)
+	StartPTY(ctx context.Context, apiKey, sandboxID string, endpoint string, size sandboxPTYSize, onData func([]byte)) (sandboxPTYSession, error)
+}
+
+type sandboxRuntimeTemplate struct {
+	TemplateID  string
+	Aliases     []string
+	BuildStatus string
+	CPUCount    int32
+	MemoryMB    int32
+	DiskSizeMB  int32
+	Public      bool
+}
+
+type sandboxRuntimeCreateRequest struct {
+	TemplateID      string
+	TimeoutSeconds  int32
+	PollingInterval time.Duration
+	Endpoint        string
+}
+
+type sandboxRuntimeInfo struct {
+	SandboxID  string
+	TemplateID string
+	State      string
+	Endpoint   string
+}
+
+type sandboxRuntimeRepositoryRequest struct {
+	SandboxID      string
+	TimeoutSeconds int32
+	Endpoint       string
+	FullName       string
+	DefaultBranch  string
+	Token          string
+}
+
+type sandboxRuntimeWorkspaceRequest struct {
+	SandboxID      string
+	TimeoutSeconds int32
+	Endpoint       string
+	WorkspacePath  string
+}
+
+type sandboxRuntimeWorkspace struct {
+	SandboxID     string
+	TemplateID    string
+	State         string
+	Endpoint      string
+	WorkspacePath string
+	IDEURL        string
+}
+
+type sandboxPTYSize struct {
+	Cols uint32
+	Rows uint32
+}
+
+type sandboxPTYSession interface {
+	Send(ctx context.Context, data []byte) error
+	Resize(ctx context.Context, size sandboxPTYSize) error
+	Close(ctx context.Context) error
+}
+
+type qiniuPTYSession struct {
+	sandbox *qiniusb.Sandbox
+	handle  *qiniusb.CommandHandle
+}
+
+type qiniuSandboxRuntime struct {
+	endpoint string
+}
+
+func newSandboxRuntime(cfg config.SandboxConfig) sandboxRuntime {
+	return &qiniuSandboxRuntime{endpoint: cfg.Endpoint}
+}
+
+func (r *qiniuSandboxRuntime) ListTemplates(ctx context.Context, apiKey, endpoint string) ([]sandboxRuntimeTemplate, error) {
+	if endpoint == "" {
+		endpoint = r.endpoint
+	}
+	client, err := qiniusb.NewClient(&qiniusb.Config{
+		APIKey:   apiKey,
+		Endpoint: endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	templates, err := client.ListTemplates(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sandboxRuntimeTemplate, 0, len(templates))
+	for _, template := range templates {
+		out = append(out, sandboxRuntimeTemplate{
+			TemplateID:  template.TemplateID,
+			Aliases:     template.Aliases,
+			BuildStatus: string(template.BuildStatus),
+			CPUCount:    template.CPUCount,
+			MemoryMB:    template.MemoryMB,
+			DiskSizeMB:  template.DiskSizeMB,
+			Public:      template.Public,
+		})
+	}
+	return out, nil
+}
+
+func (r *qiniuSandboxRuntime) Create(ctx context.Context, apiKey string, req sandboxRuntimeCreateRequest) (*sandboxRuntimeInfo, error) {
+	endpoint := r.endpoint
+	if req.Endpoint != "" {
+		endpoint = req.Endpoint
+	}
+	client, err := qiniusb.NewClient(&qiniusb.Config{
+		APIKey:   apiKey,
+		Endpoint: endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	timeout := req.TimeoutSeconds
+	sb, info, err := client.CreateAndWait(ctx, qiniusb.CreateParams{
+		TemplateID: req.TemplateID,
+		Timeout:    &timeout,
+	}, qiniusb.WithPollInterval(req.PollingInterval))
+	if err != nil {
+		return nil, err
+	}
+	return runtimeInfoFromSDK(sb, info), nil
+}
+
+func (r *qiniuSandboxRuntime) Connect(ctx context.Context, apiKey, sandboxID string, timeoutSeconds int32, endpoint string) (*sandboxRuntimeInfo, error) {
+	if endpoint == "" {
+		endpoint = r.endpoint
+	}
+	client, err := qiniusb.NewClient(&qiniusb.Config{
+		APIKey:   apiKey,
+		Endpoint: endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sb, err := client.Connect(ctx, sandboxID, qiniusb.ConnectParams{Timeout: timeoutSeconds})
+	if err != nil {
+		return nil, err
+	}
+	info, err := sb.GetInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return runtimeInfoFromSDK(sb, info), nil
+}
+
+func (r *qiniuSandboxRuntime) PrepareWorkspace(ctx context.Context, apiKey string, req sandboxRuntimeWorkspaceRequest) (*sandboxRuntimeWorkspace, error) {
+	endpoint := r.endpoint
+	if req.Endpoint != "" {
+		endpoint = req.Endpoint
+	}
+	client, err := qiniusb.NewClient(&qiniusb.Config{
+		APIKey:   apiKey,
+		Endpoint: endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sb, err := client.Connect(ctx, req.SandboxID, qiniusb.ConnectParams{Timeout: req.TimeoutSeconds})
+	if err != nil {
+		return nil, err
+	}
+	workspacePath := req.WorkspacePath
+	if workspacePath == "" {
+		workspacePath = "/workspace"
+	}
+	if _, err := sb.Commands().Run(ctx, "mkdir -p "+shellQuote(workspacePath), qiniusb.WithTimeout(time.Minute)); err != nil {
+		return nil, fmt.Errorf("prepare workspace: %w", err)
+	}
+	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath), qiniusb.WithTag("code-server")); err != nil {
+		return nil, err
+	}
+	info, err := sb.GetInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtimeInfo := runtimeInfoFromSDK(sb, info)
+	return &sandboxRuntimeWorkspace{
+		SandboxID:     runtimeInfo.SandboxID,
+		TemplateID:    runtimeInfo.TemplateID,
+		State:         runtimeInfo.State,
+		Endpoint:      runtimeInfo.Endpoint,
+		WorkspacePath: workspacePath,
+		IDEURL:        "https://" + sb.GetHost(8080),
+	}, nil
+}
+
+func (r *qiniuSandboxRuntime) PrepareRepository(ctx context.Context, apiKey string, req sandboxRuntimeRepositoryRequest) (*sandboxRuntimeWorkspace, error) {
+	endpoint := r.endpoint
+	if req.Endpoint != "" {
+		endpoint = req.Endpoint
+	}
+	client, err := qiniusb.NewClient(&qiniusb.Config{
+		APIKey:   apiKey,
+		Endpoint: endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sb, err := client.Connect(ctx, req.SandboxID, qiniusb.ConnectParams{Timeout: req.TimeoutSeconds})
+	if err != nil {
+		return nil, err
+	}
+	workspacePath := "/workspace/" + safeWorkspaceName(req.FullName)
+	if err := cloneOrUpdateRepository(ctx, sb, req, workspacePath); err != nil {
+		return nil, err
+	}
+	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath), qiniusb.WithTag("code-server")); err != nil {
+		return nil, err
+	}
+	info, err := sb.GetInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtimeInfo := runtimeInfoFromSDK(sb, info)
+	return &sandboxRuntimeWorkspace{
+		SandboxID:     runtimeInfo.SandboxID,
+		TemplateID:    runtimeInfo.TemplateID,
+		State:         runtimeInfo.State,
+		Endpoint:      runtimeInfo.Endpoint,
+		WorkspacePath: workspacePath,
+		IDEURL:        "https://" + sb.GetHost(8080),
+	}, nil
+}
+
+func (r *qiniuSandboxRuntime) StartPTY(ctx context.Context, apiKey, sandboxID string, endpoint string, size sandboxPTYSize, onData func([]byte)) (sandboxPTYSession, error) {
+	if endpoint == "" {
+		endpoint = r.endpoint
+	}
+	client, err := qiniusb.NewClient(&qiniusb.Config{
+		APIKey:   apiKey,
+		Endpoint: endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sb, err := client.Connect(ctx, sandboxID, qiniusb.ConnectParams{Timeout: 120})
+	if err != nil {
+		return nil, err
+	}
+	handle, err := sb.Pty().Create(ctx, qiniusb.PtySize{Cols: size.Cols, Rows: size.Rows}, qiniusb.WithOnPtyData(onData))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := handle.WaitPID(ctx); err != nil {
+		return nil, err
+	}
+	return &qiniuPTYSession{sandbox: sb, handle: handle}, nil
+}
+
+func (s *qiniuPTYSession) Send(ctx context.Context, data []byte) error {
+	return s.sandbox.Pty().SendInput(ctx, s.handle.PID(), data)
+}
+
+func (s *qiniuPTYSession) Resize(ctx context.Context, size sandboxPTYSize) error {
+	return s.sandbox.Pty().Resize(ctx, s.handle.PID(), qiniusb.PtySize{Cols: size.Cols, Rows: size.Rows})
+}
+
+func (s *qiniuPTYSession) Close(ctx context.Context) error {
+	return s.sandbox.Pty().Kill(ctx, s.handle.PID())
+}
+
+func runtimeInfoFromSDK(sb *qiniusb.Sandbox, info *qiniusb.SandboxInfo) *sandboxRuntimeInfo {
+	out := &sandboxRuntimeInfo{
+		SandboxID:  sb.ID(),
+		TemplateID: sb.TemplateID(),
+		State:      "running",
+	}
+	if info != nil {
+		out.SandboxID = info.SandboxID
+		out.TemplateID = info.TemplateID
+		out.State = string(info.State)
+	}
+	if domain := sb.Domain(); domain != nil {
+		out.Endpoint = *domain
+	}
+	return out
+}
+
+func cloneOrUpdateRepository(ctx context.Context, sb *qiniusb.Sandbox, req sandboxRuntimeRepositoryRequest, workspacePath string) error {
+	repositoryURL := githubRepositoryURL(req.FullName)
+	authHeader := githubAuthHeader(req.Token)
+	branch := req.DefaultBranch
+	if branch == "" {
+		branch = "main"
+	}
+	command := strings.Join([]string{
+		"set -e",
+		"mkdir -p /workspace",
+		"if [ -d " + shellQuote(workspacePath+"/.git") + " ]; then",
+		"git -C " + shellQuote(workspacePath) + " remote set-url origin " + shellQuote(repositoryURL),
+		"git -C " + shellQuote(workspacePath) + " -c http.extraheader=" + shellQuote(authHeader) + " fetch --all --prune",
+		"git -C " + shellQuote(workspacePath) + " checkout " + shellQuote(branch),
+		"git -C " + shellQuote(workspacePath) + " -c http.extraheader=" + shellQuote(authHeader) + " pull --ff-only origin " + shellQuote(branch),
+		"else",
+		"git -c http.extraheader=" + shellQuote(authHeader) + " clone --branch " + shellQuote(branch) + " " + shellQuote(repositoryURL) + " " + shellQuote(workspacePath),
+		"git -C " + shellQuote(workspacePath) + " remote set-url origin " + shellQuote(repositoryURL),
+		"fi",
+	}, "\n")
+	_, err := sb.Commands().Run(ctx, "sh -lc "+shellQuote(command), qiniusb.WithTimeout(5*time.Minute))
+	if err != nil {
+		return fmt.Errorf("clone repository: %w", err)
+	}
+	return nil
+}
+
+func githubRepositoryURL(fullName string) string {
+	return "https://github.com/" + fullName + ".git"
+}
+
+func githubAuthHeader(token string) string {
+	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return "AUTHORIZATION: basic " + encoded
+}
+
+func safeWorkspaceName(fullName string) string {
+	cleaned := strings.ReplaceAll(fullName, "/", "__")
+	return path.Clean(cleaned)
+}
+
+func codeServerCommand(workspacePath string) string {
+	command := "code-server --bind-addr 0.0.0.0:8080 --auth none " + shellQuote(workspacePath)
+	return "sh -lc " + shellQuote(command)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}

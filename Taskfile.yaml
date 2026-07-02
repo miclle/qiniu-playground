@@ -1,0 +1,141 @@
+version: "3"
+
+vars:
+  WEBSITE_DIR: website
+
+tasks:
+  default:
+    desc: Print task list
+    cmds:
+      - task --list-all --sort none
+    silent: true
+
+  init-config:
+    internal: true
+    cmds:
+      - cp cmd/playground/config.example.yaml cmd/playground/config.local.yaml
+      - echo "Created cmd/playground/config.local.yaml from config.example.yaml"
+    status:
+      - test -f cmd/playground/config.local.yaml
+
+  install:
+    desc: Install all dependencies (Go modules + frontend)
+    cmds:
+      - go mod download
+      - cd {{.WEBSITE_DIR}} && npm install
+
+  # ---------- Development ----------
+
+  dev:
+    desc: Start Vite dev server and Go server with hot-reload
+    deps: [init-config, kill-vite]
+    cmds:
+      - |
+        export QINIU_PLAYGROUND_HTTP_PORT="${QINIU_PLAYGROUND_HTTP_PORT:-19090}"
+        export QINIU_PLAYGROUND_VITE_PORT="${QINIU_PLAYGROUND_VITE_PORT:-19173}"
+        export QINIU_PLAYGROUND_API_BASE_URL="${QINIU_PLAYGROUND_API_BASE_URL:-http://127.0.0.1:${QINIU_PLAYGROUND_HTTP_PORT}}"
+        export QINIU_PLAYGROUND_VITE_DEV_SERVER_URL="${QINIU_PLAYGROUND_VITE_DEV_SERVER_URL:-http://localhost:${QINIU_PLAYGROUND_VITE_PORT}}"
+        export GITHUB_OAUTH_REDIRECT_URL="${GITHUB_OAUTH_REDIRECT_URL:-http://localhost:${QINIU_PLAYGROUND_HTTP_PORT}/api/v1/auth/github/callback}"
+
+        if lsof -iTCP:"${QINIU_PLAYGROUND_HTTP_PORT}" -sTCP:LISTEN -Pn >/dev/null 2>&1; then
+          echo "Port ${QINIU_PLAYGROUND_HTTP_PORT} is already in use. Stop the existing process or set QINIU_PLAYGROUND_HTTP_PORT explicitly." >&2
+          exit 1
+        fi
+        if lsof -iTCP:"${QINIU_PLAYGROUND_VITE_PORT}" -sTCP:LISTEN -Pn >/dev/null 2>&1; then
+          echo "Port ${QINIU_PLAYGROUND_VITE_PORT} is already in use. Stop the existing process or set QINIU_PLAYGROUND_VITE_PORT explicitly." >&2
+          exit 1
+        fi
+
+        echo "Starting Vite on ${QINIU_PLAYGROUND_VITE_DEV_SERVER_URL}"
+        echo "Starting Go server on port ${QINIU_PLAYGROUND_HTTP_PORT}"
+
+        cd {{.WEBSITE_DIR}} && npm run dev &
+        sleep 1
+        reflex \
+          -d none -s \
+          -r '\.go$' \
+          -R 'website/' \
+          -R 'tmp' \
+          -- go run -trimpath -tags development ./cmd/playground/ -c cmd/playground/config.local.yaml
+
+  run:
+    desc: Run the server (production mode, requires build first)
+    deps: [init-config]
+    cmds:
+      - go run ./cmd/playground/ -c cmd/playground/config.local.yaml
+
+  # ---------- Build ----------
+
+  build:
+    desc: Build the server binary for the current platform
+    cmds:
+      - cd {{.WEBSITE_DIR}} && npm install && npm run build
+      - ./scripts/build.sh
+
+  build-all:
+    desc: Build server binaries for all supported platforms
+    cmds:
+      - cd {{.WEBSITE_DIR}} && npm install && npm run build
+      - ./scripts/build-all.sh
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -rf bin/
+      - go clean ./...
+
+  # ---------- Code Quality ----------
+
+  lint:
+    desc: Auto-fix code style (go mod tidy + gofmt + vet + staticcheck + frontend eslint)
+    cmds:
+      - go mod tidy
+      - gofmt -w .
+      - go vet -tags development $(./scripts/go-packages.sh)
+      - staticcheck -tags development $(./scripts/go-packages.sh)
+      - cd {{.WEBSITE_DIR}} && npm run lint
+
+  check:
+    desc: Run all checks without modifying files (CI-friendly)
+    cmds:
+      - task: check-backend
+      - task: check-frontend-types
+      - task: check-mod-tidy
+
+  check-backend:
+    internal: true
+    cmds:
+      - gofmt -l .
+      - go vet -tags development $(./scripts/go-packages.sh)
+      - ./scripts/check-lint.sh
+
+  check-frontend-types:
+    internal: true
+    cmds:
+      - cd {{.WEBSITE_DIR}} && npx tsc -b
+
+  check-mod-tidy:
+    internal: true
+    cmds:
+      - ./scripts/check-mod-tidy.sh
+
+  # ---------- Testing ----------
+
+  test:
+    desc: Run Go tests with race detection and coverage, then frontend tests
+    cmds:
+      - go test -trimpath -race -tags development -coverprofile=coverage.out $(./scripts/go-packages.sh)
+      - cd {{.WEBSITE_DIR}} && npx vitest run --passWithNoTests
+
+  # ---------- Internal ----------
+
+  kill-vite:
+    internal: true
+    cmds:
+      - ./scripts/kill-vite.sh
+
+  update-tools:
+    desc: Install/update development tools (reflex, staticcheck, golangci-lint)
+    run: once
+    cmds:
+      - ./scripts/install-tools.sh

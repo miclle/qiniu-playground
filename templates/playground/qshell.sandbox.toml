@@ -1,0 +1,16 @@
+# Playground sandbox template
+#
+# qshell reads this file from the current working directory when running:
+#   qshell sandbox template build
+#
+# Prefer a stable name over a committed environment-specific template_id. qshell
+# looks up an existing template by name, rebuilds it when found, and creates one
+# when it does not exist.
+
+name = "playground"
+from_template = "base"
+dockerfile = "./Dockerfile"
+path = "."
+cpu_count = 4
+memory_mb = 8192
+no_cache = false
