@@ -37,6 +37,7 @@ type sandboxRuntimeCreateRequest struct {
 	TimeoutSeconds  int32
 	PollingInterval time.Duration
 	Endpoint        string
+	Metadata        map[string]string
 }
 
 type sandboxRuntimeInfo struct {
@@ -53,6 +54,8 @@ type sandboxRuntimeRepositoryRequest struct {
 	FullName       string
 	DefaultBranch  string
 	Token          string
+	WorkspacePath  string
+	IDEPassword    string
 }
 
 type sandboxRuntimeWorkspaceRequest struct {
@@ -60,6 +63,7 @@ type sandboxRuntimeWorkspaceRequest struct {
 	TimeoutSeconds int32
 	Endpoint       string
 	WorkspacePath  string
+	IDEPassword    string
 }
 
 type sandboxRuntimeWorkspace struct {
@@ -138,10 +142,15 @@ func (r *qiniuSandboxRuntime) Create(ctx context.Context, apiKey string, req san
 		return nil, err
 	}
 	timeout := req.TimeoutSeconds
-	sb, info, err := client.CreateAndWait(ctx, qiniusb.CreateParams{
+	params := qiniusb.CreateParams{
 		TemplateID: req.TemplateID,
 		Timeout:    &timeout,
-	}, qiniusb.WithPollInterval(req.PollingInterval))
+	}
+	if len(req.Metadata) > 0 {
+		metadata := qiniusb.Metadata(req.Metadata)
+		params.Metadata = &metadata
+	}
+	sb, info, err := client.CreateAndWait(ctx, params, qiniusb.WithPollInterval(req.PollingInterval))
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +202,7 @@ func (r *qiniuSandboxRuntime) PrepareWorkspace(ctx context.Context, apiKey strin
 	if _, err := sb.Commands().Run(ctx, "mkdir -p "+shellQuote(workspacePath), qiniusb.WithTimeout(time.Minute)); err != nil {
 		return nil, fmt.Errorf("prepare workspace: %w", err)
 	}
-	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath), qiniusb.WithTag("code-server")); err != nil {
+	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath, req.IDEPassword), qiniusb.WithTag("code-server")); err != nil {
 		return nil, err
 	}
 	info, err := sb.GetInfo(ctx)
@@ -227,11 +236,14 @@ func (r *qiniuSandboxRuntime) PrepareRepository(ctx context.Context, apiKey stri
 	if err != nil {
 		return nil, err
 	}
-	workspacePath := "/workspace/" + safeWorkspaceName(req.FullName)
+	workspacePath := req.WorkspacePath
+	if workspacePath == "" {
+		workspacePath = "/workspace/" + safeWorkspaceName(req.FullName)
+	}
 	if err := cloneOrUpdateRepository(ctx, sb, req, workspacePath); err != nil {
 		return nil, err
 	}
-	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath), qiniusb.WithTag("code-server")); err != nil {
+	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath, req.IDEPassword), qiniusb.WithTag("code-server")); err != nil {
 		return nil, err
 	}
 	info, err := sb.GetInfo(ctx)
@@ -304,6 +316,15 @@ func runtimeInfoFromSDK(sb *qiniusb.Sandbox, info *qiniusb.SandboxInfo) *sandbox
 }
 
 func cloneOrUpdateRepository(ctx context.Context, sb *qiniusb.Sandbox, req sandboxRuntimeRepositoryRequest, workspacePath string) error {
+	command := cloneOrUpdateRepositoryCommand(req, workspacePath)
+	_, err := sb.Commands().Run(ctx, "sh -lc "+shellQuote(command), qiniusb.WithTimeout(5*time.Minute))
+	if err != nil {
+		return fmt.Errorf("clone repository: %w", err)
+	}
+	return nil
+}
+
+func cloneOrUpdateRepositoryCommand(req sandboxRuntimeRepositoryRequest, workspacePath string) string {
 	repositoryURL := githubRepositoryURL(req.FullName)
 	authHeader := githubAuthHeader(req.Token)
 	branch := req.DefaultBranch
@@ -314,20 +335,13 @@ func cloneOrUpdateRepository(ctx context.Context, sb *qiniusb.Sandbox, req sandb
 		"set -e",
 		"mkdir -p /workspace",
 		"if [ -d " + shellQuote(workspacePath+"/.git") + " ]; then",
-		"git -C " + shellQuote(workspacePath) + " remote set-url origin " + shellQuote(repositoryURL),
-		"git -C " + shellQuote(workspacePath) + " -c http.extraheader=" + shellQuote(authHeader) + " fetch --all --prune",
-		"git -C " + shellQuote(workspacePath) + " checkout " + shellQuote(branch),
-		"git -C " + shellQuote(workspacePath) + " -c http.extraheader=" + shellQuote(authHeader) + " pull --ff-only origin " + shellQuote(branch),
+		"git -C " + shellQuote(workspacePath) + " remote set-url origin " + shellQuote(repositoryURL) + " 2>/dev/null || git -C " + shellQuote(workspacePath) + " remote add origin " + shellQuote(repositoryURL),
 		"else",
 		"git -c http.extraheader=" + shellQuote(authHeader) + " clone --branch " + shellQuote(branch) + " " + shellQuote(repositoryURL) + " " + shellQuote(workspacePath),
 		"git -C " + shellQuote(workspacePath) + " remote set-url origin " + shellQuote(repositoryURL),
 		"fi",
 	}, "\n")
-	_, err := sb.Commands().Run(ctx, "sh -lc "+shellQuote(command), qiniusb.WithTimeout(5*time.Minute))
-	if err != nil {
-		return fmt.Errorf("clone repository: %w", err)
-	}
-	return nil
+	return command
 }
 
 func githubRepositoryURL(fullName string) string {
@@ -344,8 +358,44 @@ func safeWorkspaceName(fullName string) string {
 	return path.Clean(cleaned)
 }
 
-func codeServerCommand(workspacePath string) string {
-	command := "code-server --bind-addr 0.0.0.0:8080 --auth none " + shellQuote(workspacePath)
+func codeServerCommand(workspacePath, password string) string {
+	if password == "" {
+		password = "qiniu-playground"
+	}
+	settingsJSON := strings.Join([]string{
+		"{",
+		`  "chat.disableAIFeatures": true,`,
+		`  "breadcrumbs.enabled": false,`,
+		`  "editor.minimap.enabled": false,`,
+		`  "extensions.ignoreRecommendations": true,`,
+		`  "extensions.showRecommendationsOnlyOnDemand": true,`,
+		`  "security.workspace.trust.enabled": false,`,
+		`  "security.workspace.trust.startupPrompt": "never",`,
+		`  "telemetry.telemetryLevel": "off",`,
+		`  "workbench.activityBar.visible": true,`,
+		`  "workbench.commandCenter": false,`,
+		`  "workbench.editor.empty.hint": "hidden",`,
+		`  "workbench.layoutControl.enabled": false,`,
+		`  "workbench.secondarySideBar.defaultVisibility": "hidden",`,
+		`  "workbench.sideBar.location": "left",`,
+		`  "workbench.startupEditor": "none",`,
+		`  "workbench.statusBar.visible": false,`,
+		`  "workbench.tips.enabled": false,`,
+		`  "workbench.welcomePage.walkthroughs.openOnInstall": false,`,
+		`  "workbench.editorAssociations": { "*.md": "default" }`,
+		"}",
+	}, "\n")
+	command := strings.Join([]string{
+		"if ! pgrep -x code-server >/dev/null; then",
+		"mkdir -p ~/.local/share/code-server/User",
+		"if [ ! -f ~/.local/share/code-server/User/settings.json ]; then",
+		"cat > ~/.local/share/code-server/User/settings.json <<'JSON'",
+		settingsJSON,
+		"JSON",
+		"fi",
+		"PASSWORD=" + shellQuote(password) + " code-server --bind-addr 0.0.0.0:8080 --auth password " + shellQuote(workspacePath),
+		"fi",
+	}, "\n")
 	return "sh -lc " + shellQuote(command)
 }
 

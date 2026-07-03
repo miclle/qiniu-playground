@@ -3,7 +3,6 @@ import type { FormEvent, ReactNode } from 'react'
 import { lazy, Suspense, useState } from 'react'
 import {
   ChevronDown,
-  ExternalLink,
   GitBranch,
   PanelsTopLeft,
   Plus,
@@ -115,8 +114,27 @@ function workspaceNameFromRepository(fullName: string) {
   return fullName.trim().replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^[-_]+|[-_]+$/g, '') || 'workspace'
 }
 
-function githubRepositoryURL(fullName?: string) {
-  return fullName ? `https://github.com/${fullName}` : ''
+function formatWorkspaceTime(value?: string) {
+  if (!value) {
+    return '-'
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return '-'
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function metadataEntries(metadata?: Record<string, string>) {
+  return Object.entries(metadata ?? {})
+    .filter(([, value]) => Boolean(value))
+    .sort(([left], [right]) => left.localeCompare(right))
 }
 
 function Home({ page }: HomeProps) {
@@ -295,12 +313,12 @@ function Home({ page }: HomeProps) {
     })
   }
 
-  function handleRepositoryWorkspaceClick(repo: (typeof repos)[number]) {
-    const workspace = workspaceRows.find((item) => item.github_repo_id === repo.github_repo_id)
-    if (workspace) {
-      navigate('/workspaces')
-      return
-    }
+	function handleRepositoryWorkspaceClick(repo: (typeof repos)[number]) {
+		const workspace = workspaceRows.find((item) => item.github_repo_id === repo.github_repo_id)
+		if (workspace) {
+			navigate(`/workspaces/${workspace.id}`)
+			return
+		}
     setSelectedRepoID(repo.id)
     setWorkspaceName(workspaceNameFromRepository(repo.full_name))
     setRepoPickerOpen(false)
@@ -543,50 +561,27 @@ function Home({ page }: HomeProps) {
         {workspaceRows.length > 0 ? (
           <div className="divide-y">
             {workspaceRows.map((workspace) => (
-              <div
+              <Link
                 key={workspace.id}
-                className="flex flex-col gap-3 px-5 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+                className="flex flex-col gap-3 px-5 py-3 text-sm text-foreground no-underline transition-colors hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 sm:flex-row sm:items-start sm:justify-between"
+                to={`/workspaces/${workspace.id}`}
               >
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium">{workspace.name || workspace.repo_full_name || workspace.sandbox_id || 'Workspace'}</span>
-                    <span className="rounded-md border px-2 py-0.5 text-xs text-muted-foreground">
-                      {workspace.state || 'configured'}
-                    </span>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {[workspace.region, workspace.template_id]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </p>
+                  {workspace.repo_full_name ? (
+                    <p className="mt-1 truncate text-xs text-muted-foreground">{workspace.repo_full_name}</p>
+                  ) : null}
                   {workspace.workspace_path ? (
                     <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{workspace.workspace_path}</p>
                   ) : null}
                 </div>
-                <div className="flex items-center gap-2">
-                  {githubRepositoryURL(workspace.repo_full_name) ? (
-                    <a
-                      className={cn(buttonVariants({ variant: 'outline', size: 'icon' }), 'text-muted-foreground no-underline hover:text-foreground')}
-                      href={githubRepositoryURL(workspace.repo_full_name)}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label={`Open ${workspace.repo_full_name || 'workspace repository'} on GitHub`}
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                    </a>
-                  ) : null}
-                  {workspace.ide_url ? (
-                    <a
-                      className={cn(buttonVariants({ variant: 'outline' }), 'text-muted-foreground no-underline hover:text-foreground')}
-                      href={workspace.ide_url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      IDE
-                    </a>
-                  ) : null}
+                <div className="grid gap-1 text-xs text-muted-foreground sm:min-w-56 sm:text-right">
+                  <span>Created {formatWorkspaceTime(workspace.created_at)}</span>
+                  <span>Updated {formatWorkspaceTime(workspace.updated_at)}</span>
                 </div>
-              </div>
+              </Link>
             ))}
           </div>
         ) : (
@@ -962,6 +957,15 @@ function Home({ page }: HomeProps) {
                       .filter(Boolean)
                       .join(' · ')}
                   </p>
+                ) : null}
+                {metadataEntries(sandbox.metadata).length > 0 ? (
+                  <div className="mt-2 flex max-w-3xl flex-wrap gap-1.5">
+                    {metadataEntries(sandbox.metadata).map(([key, value]) => (
+                      <span key={key} className="rounded-md border bg-secondary/30 px-2 py-1 text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">{key}</span>: {value}
+                      </span>
+                    ))}
+                  </div>
                 ) : null}
               </div>
               <div className="flex items-center gap-2">

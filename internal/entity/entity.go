@@ -2,10 +2,50 @@
 package entity
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 )
+
+// SandboxMetadata stores sandbox key-value metadata as JSON.
+type SandboxMetadata map[string]string
+
+// Value serializes metadata for database writes.
+func (m SandboxMetadata) Value() (driver.Value, error) {
+	if len(m) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(map[string]string(m))
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
+}
+
+// Scan deserializes metadata from database reads.
+func (m *SandboxMetadata) Scan(value any) error {
+	if value == nil {
+		*m = nil
+		return nil
+	}
+	var data []byte
+	switch typed := value.(type) {
+	case []byte:
+		data = typed
+	case string:
+		data = []byte(typed)
+	default:
+		return fmt.Errorf("scan sandbox metadata: unsupported type %T", value)
+	}
+	if len(data) == 0 {
+		*m = nil
+		return nil
+	}
+	return json.Unmarshal(data, m)
+}
 
 // Account is the application-owned user record.
 type Account struct {
@@ -136,24 +176,25 @@ func (QiniuCredential) TableName() string {
 
 // SandboxSession records a Qiniu Sandbox instance owned by an account.
 type SandboxSession struct {
-	ID              string         `gorm:"column:id;primaryKey;size:64"                                             json:"id"`
-	CreatedAt       time.Time      `gorm:"column:created_at"                                                        json:"created_at"`
-	UpdatedAt       time.Time      `gorm:"column:updated_at"                                                        json:"updated_at"`
-	DeletedAt       gorm.DeletedAt `gorm:"column:deleted_at;index"                                                  json:"deleted_at,omitempty"`
-	AccountID       string         `gorm:"column:account_id;size:64;not null;index;uniqueIndex:idx_account_sandbox" json:"account_id"`
-	SandboxID       string         `gorm:"column:sandbox_id;size:255;not null;uniqueIndex:idx_account_sandbox"      json:"sandbox_id"`
-	TemplateID      string         `gorm:"column:template_id;size:255;not null"                                     json:"template_id"`
-	State           string         `gorm:"column:state;size:64;not null"                                            json:"state"`
-	Endpoint        string         `gorm:"column:endpoint;size:1024"                                                json:"endpoint"`
-	GitHubRepoID    *int64         `gorm:"column:github_repo_id"                                                    json:"github_repo_id,omitempty"`
-	RepoFullName    string         `gorm:"column:repo_full_name;size:511"                                           json:"repo_full_name,omitempty"`
-	WorkspacePath   string         `gorm:"column:workspace_path;size:1024"                                          json:"workspace_path,omitempty"`
-	Region          string         `gorm:"column:region;size:255"                                                   json:"region,omitempty"`
-	CPUCount        int32          `gorm:"column:cpu_count"                                                         json:"cpu_count,omitempty"`
-	MemoryGB        int32          `gorm:"column:memory_gb"                                                         json:"memory_gb,omitempty"`
-	IDEURL          string         `gorm:"column:ide_url;size:2048"                                                 json:"ide_url,omitempty"`
-	LastConnectedAt *time.Time     `gorm:"column:last_connected_at"                                                 json:"last_connected_at,omitempty"`
-	Account         Account        `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"        json:"-"`
+	ID              string          `gorm:"column:id;primaryKey;size:64"                                             json:"id"`
+	CreatedAt       time.Time       `gorm:"column:created_at"                                                        json:"created_at"`
+	UpdatedAt       time.Time       `gorm:"column:updated_at"                                                        json:"updated_at"`
+	DeletedAt       gorm.DeletedAt  `gorm:"column:deleted_at;index"                                                  json:"deleted_at,omitempty"`
+	AccountID       string          `gorm:"column:account_id;size:64;not null;index;uniqueIndex:idx_account_sandbox" json:"account_id"`
+	SandboxID       string          `gorm:"column:sandbox_id;size:255;not null;uniqueIndex:idx_account_sandbox"      json:"sandbox_id"`
+	TemplateID      string          `gorm:"column:template_id;size:255;not null"                                     json:"template_id"`
+	State           string          `gorm:"column:state;size:64;not null"                                            json:"state"`
+	Endpoint        string          `gorm:"column:endpoint;size:1024"                                                json:"endpoint"`
+	GitHubRepoID    *int64          `gorm:"column:github_repo_id"                                                    json:"github_repo_id,omitempty"`
+	RepoFullName    string          `gorm:"column:repo_full_name;size:511"                                           json:"repo_full_name,omitempty"`
+	WorkspacePath   string          `gorm:"column:workspace_path;size:1024"                                          json:"workspace_path,omitempty"`
+	Region          string          `gorm:"column:region;size:255"                                                   json:"region,omitempty"`
+	CPUCount        int32           `gorm:"column:cpu_count"                                                         json:"cpu_count,omitempty"`
+	MemoryGB        int32           `gorm:"column:memory_gb"                                                         json:"memory_gb,omitempty"`
+	IDEURL          string          `gorm:"column:ide_url;size:2048"                                                 json:"ide_url,omitempty"`
+	Metadata        SandboxMetadata `gorm:"column:metadata;type:text"                                             json:"metadata,omitempty"`
+	LastConnectedAt *time.Time      `gorm:"column:last_connected_at"                                                 json:"last_connected_at,omitempty"`
+	Account         Account         `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"        json:"-"`
 }
 
 // TableName returns the database table name for SandboxSession.

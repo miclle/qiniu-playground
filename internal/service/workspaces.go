@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm/clause"
 
 	"github.com/miclle/qiniu-playground/internal/entity"
-	"github.com/miclle/qiniu-playground/pkg/id"
 )
 
 // WorkspaceInput is the normalized repository workspace payload.
 type WorkspaceInput struct {
+	ID            string
 	Name          string
 	GitHubRepoID  *int64
 	RepoFullName  string
@@ -38,12 +39,12 @@ func (s *Service) SaveWorkspace(ctx context.Context, accountID string, input Wor
 	if input.TemplateID == "" {
 		return nil, fmt.Errorf("template id is required")
 	}
-	workspaceID, err := id.NewPrefixed("wks")
-	if err != nil {
-		return nil, err
+	id := input.ID
+	if id == "" {
+		id = uuid.NewString()
 	}
 	workspace := entity.Workspace{
-		ID:            workspaceID,
+		ID:            id,
 		AccountID:     accountID,
 		Name:          input.Name,
 		GitHubRepoID:  input.GitHubRepoID,
@@ -97,6 +98,46 @@ func (s *Service) WorkspaceByGitHubRepoID(ctx context.Context, accountID string,
 		return nil, fmt.Errorf("find workspace: %w", err)
 	}
 	return &workspace, nil
+}
+
+// Workspace returns a workspace owned by an account.
+func (s *Service) Workspace(ctx context.Context, accountID, workspaceID string) (*entity.Workspace, error) {
+	var workspace entity.Workspace
+	err := s.db.WithContext(ctx).
+		Where("account_id = ? AND id = ?", accountID, workspaceID).
+		First(&workspace).Error
+	if err != nil {
+		return nil, fmt.Errorf("find workspace: %w", err)
+	}
+	return &workspace, nil
+}
+
+// UpdateWorkspaceRuntime stores the latest sandbox runtime details for a workspace.
+func (s *Service) UpdateWorkspaceRuntime(ctx context.Context, accountID, workspaceID string, input WorkspaceInput) (*entity.Workspace, error) {
+	if accountID == "" {
+		return nil, fmt.Errorf("account id is required")
+	}
+	if workspaceID == "" {
+		return nil, fmt.Errorf("workspace id is required")
+	}
+	assignments := map[string]any{
+		"sandbox_id":     input.SandboxID,
+		"template_id":    input.TemplateID,
+		"state":          input.State,
+		"endpoint":       input.Endpoint,
+		"workspace_path": input.WorkspacePath,
+		"ide_url":        input.IDEURL,
+	}
+	if input.Name != "" {
+		assignments["name"] = input.Name
+	}
+	if err := s.db.WithContext(ctx).
+		Model(&entity.Workspace{}).
+		Where("account_id = ? AND id = ?", accountID, workspaceID).
+		Updates(assignments).Error; err != nil {
+		return nil, fmt.Errorf("update workspace runtime: %w", err)
+	}
+	return s.Workspace(ctx, accountID, workspaceID)
 }
 
 // WorkspaceExistsByGitHubRepoID reports whether a workspace already exists for an account GitHub repository id.

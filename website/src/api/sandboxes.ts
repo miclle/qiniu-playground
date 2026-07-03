@@ -13,6 +13,7 @@ export interface SandboxSession {
   cpu_count?: number
   memory_gb?: number
   ide_url?: string
+  metadata?: Record<string, string>
   last_connected_at?: string
 }
 

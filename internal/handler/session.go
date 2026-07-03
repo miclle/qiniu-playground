@@ -12,8 +12,10 @@ import (
 
 const (
 	sessionCookieName = "qiniu_playground_session"
+	ideCookieName     = "qiniu_playground_ide_session"
 	oauthStateCookie  = "qiniu_playground_oauth_state"
 	sessionMaxAge     = 7 * 24 * time.Hour
+	ideTokenMaxAge    = 30 * time.Minute
 )
 
 type sessionSigner struct {
@@ -47,6 +49,31 @@ func (s sessionSigner) Verify(value string, now time.Time) (string, error) {
 		return "", fmt.Errorf("session expired")
 	}
 	return parts[0], nil
+}
+
+func (s sessionSigner) SignIDE(accountID, sandboxID string, now time.Time) string {
+	payload := fmt.Sprintf("ide.%s.%s.%d", accountID, sandboxID, now.Unix())
+	sig := s.sign(payload)
+	return payload + "." + sig
+}
+
+func (s sessionSigner) VerifyIDE(value string, now time.Time) (string, string, error) {
+	parts := strings.Split(value, ".")
+	if len(parts) != 5 || parts[0] != "ide" {
+		return "", "", fmt.Errorf("invalid IDE session format")
+	}
+	payload := strings.Join(parts[:4], ".")
+	if !hmac.Equal([]byte(parts[4]), []byte(s.sign(payload))) {
+		return "", "", fmt.Errorf("invalid IDE session signature")
+	}
+	issuedAt, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid IDE session timestamp")
+	}
+	if now.Sub(time.Unix(issuedAt, 0)) > ideTokenMaxAge {
+		return "", "", fmt.Errorf("IDE session expired")
+	}
+	return parts[1], parts[2], nil
 }
 
 func (s sessionSigner) sign(payload string) string {

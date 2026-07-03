@@ -102,3 +102,31 @@ func TestSaveSandboxSessionPreservesRepositoryMetadataOnReconnect(t *testing.T) 
 		t.Fatalf("IDEURL = %q, want preserved IDE URL", session.IDEURL)
 	}
 }
+
+func TestSaveSandboxSessionStoresMetadata(t *testing.T) {
+	svc := newTestService(t)
+	user, err := svc.UpsertGitHubIdentity(context.Background(), OAuthUser{
+		ProviderSubject: "12345",
+		Login:           "octocat",
+	})
+	if err != nil {
+		t.Fatalf("upsert identity: %v", err)
+	}
+	session, err := svc.SaveSandboxSession(context.Background(), user.AccountID, SandboxSessionInput{
+		SandboxID:  "sandbox-1",
+		TemplateID: "base",
+		State:      "running",
+		Metadata: map[string]string{
+			"created_by":     "qiniu-playground",
+			"kind":           "workspace",
+			"repo_full_name": "octocat/hello-world",
+			"workspace_path": "/workspace/octocat__hello-world",
+		},
+	})
+	if err != nil {
+		t.Fatalf("save sandbox session: %v", err)
+	}
+	if session.Metadata["created_by"] != "qiniu-playground" || session.Metadata["repo_full_name"] != "octocat/hello-world" {
+		t.Fatalf("metadata = %#v, want stored sandbox metadata", session.Metadata)
+	}
+}

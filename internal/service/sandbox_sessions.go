@@ -24,6 +24,7 @@ type SandboxSessionInput struct {
 	CPUCount      int32
 	MemoryGB      int32
 	IDEURL        string
+	Metadata      map[string]string
 }
 
 // SaveSandboxSession stores or updates a sandbox session for an account.
@@ -59,6 +60,7 @@ func (s *Service) SaveSandboxSession(ctx context.Context, accountID string, inpu
 		CPUCount:        input.CPUCount,
 		MemoryGB:        input.MemoryGB,
 		IDEURL:          input.IDEURL,
+		Metadata:        entity.SandboxMetadata(input.Metadata),
 		LastConnectedAt: &now,
 	}
 	updateAssignments := map[string]any{
@@ -88,6 +90,9 @@ func (s *Service) SaveSandboxSession(ctx context.Context, accountID string, inpu
 	}
 	if input.IDEURL != "" {
 		updateAssignments["ide_url"] = input.IDEURL
+	}
+	if len(input.Metadata) > 0 {
+		updateAssignments["metadata"] = entity.SandboxMetadata(input.Metadata)
 	}
 	err = s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{

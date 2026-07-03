@@ -45,6 +45,7 @@ type fakeSandboxRuntime struct {
 	lastPTYInput          string
 	onPTYData             func([]byte)
 	templates             []sandboxRuntimeTemplate
+	connectErr            error
 }
 
 type fakePTYSession struct {
@@ -110,6 +111,9 @@ func (f *fakeSandboxRuntime) Create(ctx context.Context, apiKey string, req sand
 func (f *fakeSandboxRuntime) Connect(ctx context.Context, apiKey, sandboxID string, timeoutSeconds int32, endpoint string) (*sandboxRuntimeInfo, error) {
 	f.lastAPIKey = apiKey
 	f.lastConnectEndpoint = endpoint
+	if f.connectErr != nil {
+		return nil, f.connectErr
+	}
 	return &sandboxRuntimeInfo{
 		SandboxID:  sandboxID,
 		TemplateID: "base",
@@ -139,12 +143,16 @@ func (f *fakeSandboxRuntime) PrepareRepository(ctx context.Context, apiKey strin
 	f.lastAPIKey = apiKey
 	f.lastPrepareRequest = req
 	f.lastRepo = req.FullName
+	workspacePath := req.WorkspacePath
+	if workspacePath == "" {
+		workspacePath = "/workspace/" + req.FullName
+	}
 	return &sandboxRuntimeWorkspace{
 		SandboxID:     req.SandboxID,
 		TemplateID:    f.lastCreateRequest.TemplateID,
 		State:         "running",
 		Endpoint:      req.SandboxID + ".example.test",
-		WorkspacePath: "/workspace/" + req.FullName,
+		WorkspacePath: workspacePath,
 		IDEURL:        "https://" + req.SandboxID + ".example.test",
 	}, nil
 }
@@ -199,7 +207,7 @@ func (f fakeGitHubOAuth) OrgMembership(ctx context.Context, accessToken, org str
 func newTestController(t *testing.T) *Ctrl {
 	t.Helper()
 
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("file:"+url.QueryEscape(t.Name())+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

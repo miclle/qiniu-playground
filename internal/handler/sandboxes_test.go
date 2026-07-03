@@ -33,12 +33,20 @@ func TestCreateSandboxUsesStoredAPIKey(t *testing.T) {
 	if runtime.lastAPIKey != "qiniu-api-key" {
 		t.Fatalf("runtime api key = %q, want decrypted key", runtime.lastAPIKey)
 	}
+	if runtime.lastCreateRequest.Metadata["created_by"] != "qiniu-playground" ||
+		runtime.lastCreateRequest.Metadata["kind"] != "standalone" ||
+		runtime.lastCreateRequest.Metadata["template_id"] != "base" {
+		t.Fatalf("runtime metadata = %#v, want standalone sandbox metadata", runtime.lastCreateRequest.Metadata)
+	}
 	var payload sandboxSessionResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if payload.SandboxID != "sandbox-1" || payload.TemplateID != "base" {
 		t.Fatalf("payload = %+v, want created sandbox", payload)
+	}
+	if payload.Metadata["created_by"] != "qiniu-playground" || payload.Metadata["kind"] != "standalone" {
+		t.Fatalf("payload metadata = %#v, want standalone metadata", payload.Metadata)
 	}
 }
 

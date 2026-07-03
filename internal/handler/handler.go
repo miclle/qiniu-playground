@@ -71,6 +71,7 @@ func (ctrl *Ctrl) RegisterRoutes(r *fox.Engine) {
 	api.GET("/github/repositories", ctrl.GitHubRepositories)
 	api.GET("/workspaces", ctrl.Workspaces)
 	api.POST("/workspaces", ctrl.CreateWorkspace)
+	api.POST("/workspaces/:workspaceID/connect", ctrl.ConnectWorkspace)
 	api.POST("/repositories/:repositoryID/open", ctrl.OpenRepository)
 	api.GET("/qiniu/credentials", ctrl.QiniuCredentialStatus)
 	api.PUT("/qiniu/credentials", ctrl.SaveQiniuCredential)

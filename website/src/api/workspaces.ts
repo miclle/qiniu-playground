@@ -2,6 +2,8 @@ import client from 'src/api/client'
 
 export interface Workspace {
   id: string
+  created_at?: string
+  updated_at?: string
   name?: string
   github_repo_id?: number
   repo_full_name?: string
@@ -26,4 +28,12 @@ export interface CreateWorkspacePayload {
 
 export function createWorkspace(payload: CreateWorkspacePayload) {
   return client.post<Workspace>('/workspaces', payload)
+}
+
+export interface ConnectWorkspaceOptions {
+  recreate?: boolean
+}
+
+export function connectWorkspace(workspaceID: string, options?: ConnectWorkspaceOptions) {
+  return client.post<Workspace>(`/workspaces/${workspaceID}/connect`, options)
 }

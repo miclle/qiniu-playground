@@ -1,0 +1,443 @@
+import { useMutation, useQuery } from '@tanstack/react-query'
+import type { AxiosError } from 'axios'
+import { useEffect, useRef, useState } from 'react'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Bot,
+  CheckCircle2,
+  Code2,
+  GitBranch,
+  PanelsTopLeft,
+  Rocket,
+  Settings,
+} from 'lucide-react'
+import { Link, useParams } from 'react-router-dom'
+
+import { connectWorkspace, workspaces as fetchWorkspaces } from 'src/api/workspaces'
+import type { Workspace } from 'src/api/workspaces'
+import { Button, buttonVariants } from 'src/components/ui/button'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from 'src/components/ui/dialog'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from 'src/components/ui/sheet'
+import { cn } from 'src/lib/utils'
+import { queryClient } from 'src/lib/query-client'
+
+function githubRepositoryURL(fullName?: string) {
+  return fullName ? `https://github.com/${fullName}` : ''
+}
+
+function workspaceTitle(workspace: Workspace) {
+  return workspace.name || workspace.repo_full_name || workspace.sandbox_id || 'Workspace'
+}
+
+function metadata(workspace: Workspace) {
+  return {
+    id: workspace.id,
+    name: workspace.name || null,
+    repo: workspace.repo_full_name || null,
+    region: workspace.region,
+    sandbox: workspace.sandbox_id || null,
+    template: workspace.template_id,
+    path: workspace.workspace_path || null,
+  }
+}
+
+function DetailRow({ label, value }: { label: string; value?: string | number | null }) {
+  return (
+    <div className="grid grid-cols-[96px_1fr] gap-3 border-b px-4 py-3 text-sm last:border-b-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="min-w-0 truncate font-medium">{value || '-'}</span>
+    </div>
+  )
+}
+
+function isMissingSandboxError(error: unknown) {
+  return (error as AxiosError | undefined)?.response?.status === 409
+}
+
+function connectionErrorMessage(error: unknown) {
+  const axiosError = error as AxiosError | undefined
+  const data = axiosError?.response?.data
+  if (typeof data === 'string' && data.trim()) {
+    return data.trim()
+  }
+  if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string') {
+    return data.error
+  }
+  return axiosError?.message || 'Unable to connect to this workspace.'
+}
+
+function WorkspaceDetail() {
+  const { workspaceId } = useParams()
+  const [dismissedMissingWorkspaceID, setDismissedMissingWorkspaceID] = useState('')
+  const previousWorkspaceIDRef = useRef<string | undefined>(undefined)
+  const workspacesQuery = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: fetchWorkspaces,
+    retry: false,
+  })
+  const workspace = workspacesQuery.data?.data.workspaces.find((item) => item.id === workspaceId)
+  const updateWorkspaceCache = (updatedWorkspace: Workspace) => {
+    queryClient.setQueryData<Awaited<ReturnType<typeof fetchWorkspaces>>>(['workspaces'], (current) => {
+      if (!current) {
+        return current
+      }
+      return {
+        ...current,
+        data: {
+          ...current.data,
+          workspaces: current.data.workspaces.map((item) => (
+            item.id === updatedWorkspace.id ? updatedWorkspace : item
+          )),
+        },
+      }
+    })
+  }
+  const connectWorkspaceMutation = useMutation({
+    mutationFn: ({ recreate = false }: { recreate?: boolean } = {}) => {
+      if (!workspace?.id) {
+        throw new Error('workspace id is required')
+      }
+      return connectWorkspace(workspace.id, recreate ? { recreate: true } : undefined)
+    },
+    onSuccess: (response) => {
+      setDismissedMissingWorkspaceID('')
+      updateWorkspaceCache(response.data)
+    },
+  })
+  const connectedWorkspace = connectWorkspaceMutation.data?.data
+
+  useEffect(() => {
+    if (previousWorkspaceIDRef.current === workspaceId) {
+      return
+    }
+    previousWorkspaceIDRef.current = workspaceId
+    connectWorkspaceMutation.reset()
+    setDismissedMissingWorkspaceID('')
+  }, [connectWorkspaceMutation.reset, workspaceId])
+
+  useEffect(() => {
+    if (
+      !workspace?.id ||
+      connectedWorkspace?.id === workspace.id ||
+      connectWorkspaceMutation.error ||
+      connectWorkspaceMutation.isPending
+    ) {
+      return
+    }
+    connectWorkspaceMutation.mutate({})
+  }, [
+    connectWorkspaceMutation.error,
+    connectWorkspaceMutation.isPending,
+    connectWorkspaceMutation.mutate,
+    connectedWorkspace?.id,
+    workspace?.id,
+  ])
+
+  if (workspacesQuery.isLoading) {
+    return <div className="p-6 text-sm text-muted-foreground">Loading workspace...</div>
+  }
+
+  if (workspacesQuery.isError) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6">
+        <section className="w-full max-w-md rounded-md border p-6 text-center">
+          <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full border bg-destructive/10 text-destructive">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <h1 className="mt-4 text-xl font-semibold">Failed to load workspaces</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {connectionErrorMessage(workspacesQuery.error)}
+          </p>
+          <Button type="button" className="mt-5" onClick={() => void workspacesQuery.refetch()}>
+            Retry
+          </Button>
+        </section>
+      </div>
+    )
+  }
+
+  if (!workspace) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6">
+        <section className="w-full max-w-md rounded-md border p-6">
+          <PanelsTopLeft className="h-8 w-8 text-muted-foreground" />
+          <h1 className="mt-4 text-xl font-semibold">Workspace not found</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            This workspace may have been removed or belongs to another account.
+          </p>
+          <Link className={cn(buttonVariants({ variant: 'outline' }), 'mt-5 no-underline')} to="/workspaces">
+            <ArrowLeft className="h-4 w-4" />
+            Back to workspaces
+          </Link>
+        </section>
+      </div>
+    )
+  }
+
+  const currentWorkspace = connectedWorkspace ?? workspace
+  const title = workspaceTitle(currentWorkspace)
+  const repoURL = githubRepositoryURL(currentWorkspace.repo_full_name)
+  const metadataJSON = JSON.stringify(metadata(currentWorkspace), null, 2)
+  const reconnecting = connectWorkspaceMutation.isPending
+  const connectError = reconnecting ? null : connectWorkspaceMutation.error
+  const sandboxMissing = !connectWorkspaceMutation.data && isMissingSandboxError(connectError)
+  const connectFailed = Boolean(connectError && !sandboxMissing)
+  const canShowIDE = Boolean(currentWorkspace.ide_url && !sandboxMissing && !connectFailed && !reconnecting)
+  const missingSandboxLabel = workspace.sandbox_id || '-'
+  const missingSandboxOpen = sandboxMissing && dismissedMissingWorkspaceID !== workspace.id
+
+  return (
+    <div className="flex min-h-screen flex-col bg-background">
+      <Dialog
+        open={missingSandboxOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDismissedMissingWorkspaceID(workspace.id)
+          }
+        }}
+      >
+        <DialogContent className="max-w-md rounded-md" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-600" />
+              Sandbox unavailable
+            </DialogTitle>
+            <DialogDescription>
+              The sandbox for this workspace no longer exists. You can create a new sandbox with the same workspace
+              configuration and continue from a fresh runtime.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border bg-secondary/30 px-4 py-3 text-sm">
+            <span className="text-muted-foreground">Missing sandbox</span>
+            <p className="mt-1 truncate font-mono text-xs">{missingSandboxLabel}</p>
+          </div>
+          <DialogFooter>
+            <DialogClose
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDismissedMissingWorkspaceID(workspace.id)}
+                  disabled={connectWorkspaceMutation.isPending}
+                />
+              }
+            >
+              Not now
+            </DialogClose>
+            <Button
+              type="button"
+              onClick={() => connectWorkspaceMutation.mutate({ recreate: true })}
+              disabled={connectWorkspaceMutation.isPending}
+            >
+              {connectWorkspaceMutation.isPending ? 'Creating...' : 'Create new sandbox'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
+        <div className="flex flex-col gap-3 px-5 py-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <Link
+              className={cn(buttonVariants({ variant: 'outline', size: 'icon' }), 'no-underline')}
+              to="/workspaces"
+              aria-label="Back to workspaces"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="truncate text-lg font-semibold">{title}</h1>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {repoURL ? (
+              <a
+                className={cn(buttonVariants({ variant: 'outline' }), 'no-underline')}
+                href={repoURL}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <GitBranch className="h-4 w-4" />
+                Repository
+              </a>
+            ) : null}
+            <Sheet>
+              <SheetTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    aria-label="Workspace settings"
+                  />
+                }
+              >
+                <Settings className="h-4 w-4" />
+              </SheetTrigger>
+              <SheetContent>
+                <SheetHeader>
+                  <SheetTitle>Workspace metadata</SheetTitle>
+                  <SheetDescription>Runtime details and launch readiness for {title}.</SheetDescription>
+                </SheetHeader>
+                <div className="flex-1 overflow-auto p-5">
+                  <div className="mb-4 rounded-md border">
+                    <DetailRow label="Region" value={currentWorkspace.region} />
+                    <DetailRow label="Template" value={currentWorkspace.template_id} />
+                    <DetailRow label="Sandbox" value={currentWorkspace.sandbox_id} />
+                    <DetailRow label="Endpoint" value={currentWorkspace.endpoint} />
+                  </div>
+                  <pre className="overflow-auto rounded-md border bg-secondary/30 p-4 text-xs leading-6 text-foreground">
+                    <code>{metadataJSON}</code>
+                  </pre>
+                  <div className="mt-4 rounded-md border">
+                    <div className="flex items-center gap-2 border-b px-4 py-3">
+                      <Rocket className="h-4 w-4 text-muted-foreground" />
+                      <h3 className="text-sm font-semibold">Launch checklist</h3>
+                    </div>
+                    <div className="divide-y text-sm">
+                      <div className="flex items-center justify-between px-4 py-3">
+                        <span className="text-muted-foreground">IDE proxy</span>
+                        <span className="font-medium">{currentWorkspace.ide_url ? 'available' : 'missing'}</span>
+                      </div>
+                      <div className="flex items-center justify-between px-4 py-3">
+                        <span className="text-muted-foreground">Repository</span>
+                        <span className="font-medium">{currentWorkspace.repo_full_name || 'scratch workspace'}</span>
+                      </div>
+                      <div className="flex items-center justify-between px-4 py-3">
+                        <span className="text-muted-foreground">Region</span>
+                        <span className="font-medium">{currentWorkspace.region}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
+        </div>
+      </header>
+
+      <div className="grid flex-1 grid-cols-1 xl:grid-cols-[360px_minmax(420px,1fr)]">
+        <section className="flex min-h-[520px] flex-col border-b xl:border-r xl:border-b-0">
+          <div className="flex items-center justify-between border-b px-4 py-3">
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-primary" />
+              <h2 className="text-sm font-semibold">Assistant</h2>
+            </div>
+            <span className="text-xs text-muted-foreground">Workspace context</span>
+          </div>
+          <div className="flex-1 space-y-4 overflow-auto p-4">
+            <div className="rounded-md border bg-secondary/40 p-4">
+              <p className="text-sm font-medium">Ready to work in {title}</p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                This view keeps the repository, sandbox, and launch targets in one place so the next action is obvious.
+              </p>
+            </div>
+            <div className="space-y-3">
+              {[
+                ['Sandbox prepared', currentWorkspace.sandbox_id || 'Waiting for sandbox id'],
+                ['Template selected', currentWorkspace.template_id],
+                ['Workspace mounted', currentWorkspace.workspace_path || 'Path unavailable'],
+              ].map(([label, value]) => (
+                <div key={label} className="flex gap-3 rounded-md border p-3">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{label}</p>
+                    <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{value}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="flex min-h-[520px] flex-col border-b xl:border-r xl:border-b-0">
+          <div className="flex items-center justify-between border-b px-4 py-3">
+            <div className="flex items-center gap-2">
+              <Code2 className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold">Code</h2>
+            </div>
+            <span className="text-xs text-muted-foreground">{currentWorkspace.workspace_path || '/workspace'}</span>
+          </div>
+          <div className="flex flex-1">
+            {canShowIDE ? (
+              <iframe
+                title="Code server IDE"
+                src={currentWorkspace.ide_url}
+                allow="clipboard-read; clipboard-write"
+                referrerPolicy="no-referrer"
+                className="h-[calc(100vh-6.5rem)] min-h-[640px] w-full border-0 bg-background"
+              />
+            ) : (
+              <div className="flex h-[calc(100vh-6.5rem)] min-h-[640px] w-full items-center justify-center bg-background p-6 text-sm text-muted-foreground">
+                {sandboxMissing ? (
+                  <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
+                      <AlertTriangle className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-base font-semibold text-foreground">Sandbox unavailable</h3>
+                      <p>Create a new sandbox to continue working in this workspace.</p>
+                    </div>
+                    <div className="w-full rounded-md border bg-secondary/30 px-4 py-3 text-left">
+                      <span className="text-muted-foreground">Missing sandbox</span>
+                      <p className="mt-1 truncate font-mono text-xs text-foreground">{missingSandboxLabel}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={() => connectWorkspaceMutation.mutate({ recreate: true })}
+                      disabled={connectWorkspaceMutation.isPending}
+                    >
+                      {connectWorkspaceMutation.isPending ? 'Creating...' : 'Create new sandbox'}
+                    </Button>
+                  </div>
+                ) : connectFailed ? (
+                  <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
+                      <AlertTriangle className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-base font-semibold text-foreground">Workspace connection failed</h3>
+                      <p>{connectionErrorMessage(connectError)}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={() => connectWorkspaceMutation.mutate({})}
+                      disabled={connectWorkspaceMutation.isPending}
+                    >
+                      {connectWorkspaceMutation.isPending ? 'Retrying...' : 'Retry'}
+                    </Button>
+                  </div>
+                ) : reconnecting ? (
+                  'Checking sandbox...'
+                ) : (
+                  'Preparing code-server...'
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+
+      </div>
+    </div>
+  )
+}
+
+export default WorkspaceDetail

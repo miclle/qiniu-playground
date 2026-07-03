@@ -181,3 +181,15 @@ func (s *Service) GitHubRepository(ctx context.Context, accountID, repositoryID 
 	}
 	return &repo, nil
 }
+
+// GitHubRepositoryByGitHubRepoID returns a locally cached repository by GitHub repository id.
+func (s *Service) GitHubRepositoryByGitHubRepoID(ctx context.Context, accountID string, githubRepoID int64) (*entity.GitHubRepository, error) {
+	var repo entity.GitHubRepository
+	err := s.db.WithContext(ctx).
+		Where("account_id = ? AND github_repo_id = ?", accountID, githubRepoID).
+		First(&repo).Error
+	if err != nil {
+		return nil, fmt.Errorf("find github repository: %w", err)
+	}
+	return &repo, nil
+}

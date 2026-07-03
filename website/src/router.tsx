@@ -5,6 +5,7 @@ import MainLayout from 'src/layouts/MainLayout'
 import Home from 'src/views/home'
 import Login from 'src/views/login'
 import NotFound from 'src/views/errors/NotFound'
+import WorkspaceDetail from 'src/views/workspace-detail'
 
 const routes: RouteObject[] = [
   {
@@ -19,6 +20,7 @@ const routes: RouteObject[] = [
       { path: 'sandboxes', element: <Home page="sandbox" /> },
     ],
   },
+  { path: '/workspaces/:workspaceId', element: <WorkspaceDetail /> },
   { path: '/login', element: <Login /> },
   { path: '*', element: <NotFound /> },
 ]
