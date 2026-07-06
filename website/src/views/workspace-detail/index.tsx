@@ -1,14 +1,24 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import type { AxiosError } from 'axios'
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import * as echarts from 'echarts/core'
+import { LineChart } from 'echarts/charts'
+import { AxisPointerComponent, GridComponent, TooltipComponent } from 'echarts/components'
+import { SVGRenderer } from 'echarts/renderers'
+import type { ECharts, EChartsCoreOption } from 'echarts/core'
 import {
+  Activity,
   AlertTriangle,
   ArrowLeft,
   Bot,
   CheckCircle2,
+  Cpu,
   ExternalLink,
   FolderTree,
+  Gauge,
   GitBranch,
+  HardDrive,
   PanelsTopLeft,
   Plus,
   Rocket,
@@ -20,6 +30,8 @@ import { Link, useParams } from 'react-router-dom'
 
 import { connectWorkspace, workspaces as fetchWorkspaces } from 'src/api/workspaces'
 import type { Workspace } from 'src/api/workspaces'
+import { sandboxMetrics } from 'src/api/sandboxes'
+import type { SandboxMetric } from 'src/api/sandboxes'
 import { Button, buttonVariants } from 'src/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from 'src/components/ui/tabs'
 import { WorkspaceFileBrowser } from 'src/components/WorkspaceFileBrowser'
@@ -43,7 +55,10 @@ import {
 import { cn } from 'src/lib/utils'
 import { queryClient } from 'src/lib/query-client'
 
+echarts.use([AxisPointerComponent, GridComponent, LineChart, SVGRenderer, TooltipComponent])
+
 const TerminalPanel = lazy(() => import('src/components/TerminalPanel'))
+const metricsChartGroup = 'workspace-monitor-metrics'
 
 type WorkbenchTab = string
 
@@ -102,6 +117,411 @@ function connectionErrorMessage(error: unknown) {
   return axiosError?.message || 'Unable to connect to this workspace.'
 }
 
+function bytesToGiB(value?: number) {
+  if (!value || value <= 0) {
+    return '-'
+  }
+  return `${(value / 1024 / 1024 / 1024).toFixed(value >= 10 * 1024 * 1024 * 1024 ? 1 : 2)} GiB`
+}
+
+function metricTime(metric: SandboxMetric) {
+  if (metric.timestamp_unix) {
+    return metric.timestamp_unix > 1e12 ? metric.timestamp_unix : metric.timestamp_unix * 1000
+  }
+  return metric.timestamp ? new Date(metric.timestamp).getTime() : 0
+}
+
+function metricPercent(used?: number, total?: number) {
+  if (!used || !total) {
+    return 0
+  }
+  return Math.min(100, Math.max(0, (used / total) * 100))
+}
+
+function formatPercent(value?: number) {
+  if (!Number.isFinite(value)) {
+    return '-'
+  }
+  return `${Number(value).toFixed(Number(value) >= 10 ? 1 : 2)}%`
+}
+
+function formatMetricClock(metric?: SandboxMetric) {
+  if (!metric) {
+    return '-'
+  }
+  const time = metricTime(metric)
+  return time ? new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'
+}
+
+function metricLevel(value: number) {
+  if (value >= 85) {
+    return 'bg-destructive'
+  }
+  if (value >= 65) {
+    return 'bg-amber-500'
+  }
+  return 'bg-emerald-600'
+}
+
+function MonitorMetricCard({
+  icon,
+  label,
+  value,
+  detail,
+  percent,
+}: {
+  icon: ReactNode
+  label: string
+  value: string
+  detail: string
+  percent: number
+}) {
+  return (
+    <div className="rounded-md border bg-background p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <span className="flex h-8 w-8 items-center justify-center rounded-md border bg-secondary/50 text-muted-foreground">
+            {icon}
+          </span>
+          {label}
+        </div>
+        <span className="text-sm font-semibold">{value}</span>
+      </div>
+      <div className="mt-4 h-2 rounded-full bg-secondary">
+        <div
+          className={cn('h-2 rounded-full transition-all', metricLevel(percent))}
+          style={{ width: `${Math.max(2, Math.min(100, percent))}%` }}
+        />
+      </div>
+      <p className="mt-3 truncate text-xs text-muted-foreground">{detail}</p>
+    </div>
+  )
+}
+
+function normalizeMetricSeries(
+  metrics: SandboxMetric[],
+  pick: (metric: SandboxMetric) => number,
+) {
+  const samples = metrics
+    .map((metric) => ({ metric, time: metricTime(metric), value: Math.min(100, Math.max(0, pick(metric))) }))
+    .filter((sample) => Number.isFinite(sample.time) && sample.time > 0)
+    .sort((left, right) => left.time - right.time)
+    .slice(-48)
+  if (samples.length === 1) {
+    return [{ ...samples[0], time: samples[0].time - 60_000 }, samples[0]]
+  }
+  return samples
+}
+
+function sharedMetricTimeDomain(metrics: SandboxMetric[]) {
+  const times = metrics
+    .map(metricTime)
+    .filter((time) => Number.isFinite(time) && time > 0)
+    .sort((left, right) => left - right)
+  if (times.length === 0) {
+    return null
+  }
+  if (times.length === 1) {
+    return { min: times[0] - 60_000, max: times[0] }
+  }
+  return { min: times[0], max: times[times.length - 1] }
+}
+
+function metricTimeStep(metrics: SandboxMetric[]) {
+  const times = metrics
+    .map(metricTime)
+    .filter((time) => Number.isFinite(time) && time > 0)
+    .sort((left, right) => left - right)
+  const intervals = times
+    .slice(1)
+    .map((time, index) => time - times[index])
+    .filter((interval) => interval > 0)
+    .sort((left, right) => left - right)
+  if (intervals.length === 0) {
+    return undefined
+  }
+  return intervals[Math.floor(intervals.length / 2)]
+}
+
+function formatChartTime(value: number, step?: number) {
+  return new Date(value).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    ...(step && step < 60_000 ? { second: '2-digit' } : {}),
+  })
+}
+
+function useEChart(option: EChartsCoreOption, group: string) {
+  const chartRef = useRef<HTMLDivElement | null>(null)
+  const chartInstanceRef = useRef<ECharts | null>(null)
+
+  useEffect(() => {
+    const element = chartRef.current
+    if (!element) {
+      return undefined
+    }
+
+    const chart = echarts.init(element, undefined, { renderer: 'svg' })
+    chart.group = group
+    chartInstanceRef.current = chart
+    echarts.connect(group)
+    let resizeObserver: ResizeObserver | undefined
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => chart.resize())
+      resizeObserver.observe(element)
+    }
+
+    return () => {
+      resizeObserver?.disconnect()
+      echarts.disconnect(group)
+      chart.dispose()
+      chartInstanceRef.current = null
+    }
+  }, [group])
+
+  useEffect(() => {
+    chartInstanceRef.current?.setOption(option, true)
+  }, [option])
+
+  return chartRef
+}
+
+function EChartPanel({ option, title }: { option: EChartsCoreOption; title: string }) {
+  const chartRef = useEChart(option, metricsChartGroup)
+  return <div ref={chartRef} className="mt-3 h-56 w-full" role="img" aria-label={`${title} chart`} data-chart-group={metricsChartGroup} />
+}
+
+function MetricLineChart({
+  title,
+  metrics,
+  series,
+  timeDomain,
+  timeStep,
+}: {
+  title: string
+  metrics: SandboxMetric[]
+  series: Array<{ label: string; color: string; pick: (metric: SandboxMetric) => number }>
+  timeDomain: { min: number; max: number } | null
+  timeStep?: number
+}) {
+  const normalized = useMemo(
+    () => series.map((item) => ({ ...item, samples: normalizeMetricSeries(metrics, item.pick) })),
+    [metrics, series],
+  )
+  const allSamples = useMemo(() => normalized.flatMap((item) => item.samples), [normalized])
+  const sampleTimes = useMemo(() => (
+    Array.from(new Set(allSamples.map((sample) => sample.time).filter((time) => Number.isFinite(time) && time > 0))).sort((left, right) => left - right)
+  ), [allSamples])
+  const sampleLabels = useMemo(() => sampleTimes.map((time) => formatChartTime(time, timeStep)), [sampleTimes, timeStep])
+  const minTime = timeDomain?.min ?? Math.min(...allSamples.map((sample) => sample.time))
+  const maxTime = timeDomain?.max ?? Math.max(...allSamples.map((sample) => sample.time))
+  const hasSamples = allSamples.length > 0 && Number.isFinite(minTime) && Number.isFinite(maxTime)
+  const option = useMemo<EChartsCoreOption>(() => ({
+    animation: false,
+    axisPointer: {
+      link: [{ xAxisIndex: 'all' }],
+      snap: true,
+    },
+    color: normalized.map((item) => item.color),
+    grid: { top: 14, right: 14, bottom: 28, left: 42 },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {
+        type: 'line',
+        lineStyle: { color: 'rgba(100, 116, 139, 0.45)', type: 'dashed', width: 1 },
+      },
+      borderWidth: 1,
+      padding: 8,
+      formatter: (params: unknown) => {
+        const items = (Array.isArray(params) ? params : [params]) as Array<{
+          axisValue?: string
+          marker?: string
+          seriesName?: string
+          value?: number
+        }>
+        const lines = [items[0]?.axisValue ? `<div>${items[0].axisValue}</div>` : '']
+        items.forEach((item) => {
+          const value = Number(item.value)
+          lines.push(`<div>${item.marker ?? ''}${item.seriesName ?? ''}: ${formatPercent(value)}</div>`)
+        })
+        return lines.join('')
+      },
+    },
+    xAxis: {
+      type: 'category',
+      data: sampleLabels,
+      axisLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.24)' } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: 'rgb(100, 116, 139)',
+        hideOverlap: true,
+      },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: 100,
+      interval: 50,
+      axisLabel: {
+        color: 'rgb(100, 116, 139)',
+        formatter: '{value}%',
+      },
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.24)', type: 'dashed' } },
+    },
+    series: normalized.map((item) => ({
+      name: item.label,
+      type: 'line',
+      data: sampleTimes.map((time) => item.samples.find((sample) => sample.time === time)?.value ?? null),
+      showSymbol: false,
+      smooth: true,
+      lineStyle: { width: 2 },
+      areaStyle: { opacity: 0.08 },
+      emphasis: { focus: 'series' },
+    })),
+  }), [normalized, sampleLabels, sampleTimes])
+
+  if (!hasSamples) {
+    return (
+      <div className="rounded-md bg-background p-3">
+        <div className="flex items-center justify-between gap-3">
+          <h4 className="text-sm font-medium">{title}</h4>
+          <span className="text-xs text-muted-foreground">0 samples</span>
+        </div>
+        <div className="mt-3 flex h-52 items-center justify-center rounded-md bg-secondary/30 text-sm text-muted-foreground">
+          No metric samples yet.
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-background py-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h4 className="text-sm font-medium">{title}</h4>
+        <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+          {normalized.map((item) => (
+            <span key={item.label} className="inline-flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
+              {item.label}
+            </span>
+          ))}
+        </div>
+      </div>
+      <EChartPanel option={option} title={title} />
+    </div>
+  )
+}
+
+function SandboxMonitor({
+  workspace,
+  metrics,
+  loading,
+  error,
+  onRefresh,
+}: {
+  workspace: Workspace
+  metrics: SandboxMetric[]
+  loading: boolean
+  error: unknown
+  onRefresh: () => void
+}) {
+  const latest = metrics[metrics.length - 1]
+  const cpuPercent = latest?.cpu_used_pct ?? 0
+  const memoryPercent = latest ? metricPercent(latest.mem_used, latest.mem_total) : 0
+  const diskPercent = latest ? metricPercent(latest.disk_used, latest.disk_total) : 0
+  const timeDomain = sharedMetricTimeDomain(metrics)
+  const timeStep = metricTimeStep(metrics)
+  const cpuSeries = useMemo(() => [
+    { label: `CPU ${formatPercent(cpuPercent)}`, color: '#f97316', pick: (metric: SandboxMetric) => metric.cpu_used_pct || 0 },
+  ], [cpuPercent])
+  const memorySeries = useMemo(() => [
+    { label: `Memory ${formatPercent(memoryPercent)}`, color: '#64748b', pick: (metric: SandboxMetric) => metricPercent(metric.mem_used, metric.mem_total) },
+  ], [memoryPercent])
+  const diskSeries = useMemo(() => [
+    { label: `Disk ${formatPercent(diskPercent)}`, color: '#0f766e', pick: (metric: SandboxMetric) => metricPercent(metric.disk_used, metric.disk_total) },
+  ], [diskPercent])
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-secondary/20">
+      <div className="grid gap-4 border-b bg-background p-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-md border bg-background p-4">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Activity className="h-4 w-4 text-emerald-600" />
+            Runtime
+          </div>
+          <p className="mt-3 text-2xl font-semibold">{workspace.state || 'unknown'}</p>
+          <p className="mt-2 truncate text-xs text-muted-foreground">{workspace.sandbox_id || 'Sandbox pending'}</p>
+        </div>
+        <MonitorMetricCard
+          icon={<Cpu className="h-4 w-4" />}
+          label="CPU"
+          value={formatPercent(cpuPercent)}
+          detail={`${latest?.cpu_count || '-'} vCPU · latest ${formatMetricClock(latest)}`}
+          percent={cpuPercent}
+        />
+        <MonitorMetricCard
+          icon={<Gauge className="h-4 w-4" />}
+          label="Memory"
+          value={formatPercent(memoryPercent)}
+          detail={`${bytesToGiB(latest?.mem_used)} / ${bytesToGiB(latest?.mem_total)}`}
+          percent={memoryPercent}
+        />
+        <MonitorMetricCard
+          icon={<HardDrive className="h-4 w-4" />}
+          label="Disk"
+          value={formatPercent(diskPercent)}
+          detail={`${bytesToGiB(latest?.disk_used)} / ${bytesToGiB(latest?.disk_total)}`}
+          percent={diskPercent}
+        />
+      </div>
+      <div className="p-4">
+        <section className="space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold">Resource trend</h3>
+              <p className="mt-1 text-xs text-muted-foreground">Recent CPU, memory, and disk pressure from the sandbox metrics API.</p>
+            </div>
+            <Button type="button" variant="outline" onClick={onRefresh} disabled={loading}>
+              {loading ? 'Refreshing...' : 'Refresh'}
+            </Button>
+          </div>
+          {error ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+              {connectionErrorMessage(error)}
+            </div>
+          ) : null}
+          <div className="divide-y">
+            <MetricLineChart
+              title="CPU"
+              metrics={metrics}
+              timeDomain={timeDomain}
+              timeStep={timeStep}
+              series={cpuSeries}
+            />
+            <MetricLineChart
+              title="Memory"
+              metrics={metrics}
+              timeDomain={timeDomain}
+              timeStep={timeStep}
+              series={memorySeries}
+            />
+            <MetricLineChart
+              title="Disk"
+              metrics={metrics}
+              timeDomain={timeDomain}
+              timeStep={timeStep}
+              series={diskSeries}
+            />
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
 function WorkspaceDetail() {
   const { workspaceId } = useParams()
   const [dismissedMissingWorkspaceID, setDismissedMissingWorkspaceID] = useState('')
@@ -144,6 +564,20 @@ function WorkspaceDetail() {
     },
   })
   const connectedWorkspace = connectWorkspaceMutation.data?.data
+  const monitorSandboxID = connectedWorkspace?.sandbox_id ?? workspace?.sandbox_id
+  const metricsQuery = useQuery({
+    queryKey: ['sandbox-metrics', monitorSandboxID],
+    queryFn: () => {
+      if (!monitorSandboxID) {
+        throw new Error('sandbox id is required')
+      }
+      const end = Math.floor(Date.now() / 1000)
+      return sandboxMetrics(monitorSandboxID, { start: end - 30 * 60, end })
+    },
+    enabled: Boolean(monitorSandboxID && workbenchTab === 'monitor' && !connectWorkspaceMutation.isPending),
+    refetchInterval: workbenchTab === 'monitor' ? 15_000 : false,
+    retry: false,
+  })
 
   useEffect(() => {
     if (previousWorkspaceIDRef.current === workspaceId) {
@@ -413,7 +847,7 @@ function WorkspaceDetail() {
 
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[320px_minmax(480px,1fr)]">
         <section className="flex min-h-0 flex-col border-b xl:border-r xl:border-b-0">
-          <div className="flex items-center justify-between border-b px-4 py-3">
+          <div className="flex h-10 items-center justify-between border-b px-4">
             <div className="flex items-center gap-2">
               <Bot className="h-4 w-4 text-primary" />
               <h2 className="text-sm font-semibold">Assistant</h2>
@@ -447,11 +881,15 @@ function WorkspaceDetail() {
 
         <section className="flex min-h-0 flex-col">
           <Tabs value={workbenchTab} onValueChange={handleWorkbenchTabChange} className="min-h-0 flex-1">
-            <div className="flex shrink-0 items-center border-b bg-background">
+            <div className="flex h-10 shrink-0 items-center border-b bg-background">
               <TabsList className="border-b-0">
                 <TabsTrigger value="files">
                   <FolderTree className="h-4 w-4" />
                   Files
+                </TabsTrigger>
+                <TabsTrigger value="monitor">
+                  <Activity className="h-4 w-4" />
+                  Monitor
                 </TabsTrigger>
                 {terminalSessions.map((session) => (
                   <div key={session.id} role="presentation" className="inline-flex h-9 shrink-0 items-center">
@@ -532,6 +970,25 @@ function WorkspaceDetail() {
                   workspacePath={currentWorkspace.workspace_path}
                   disabled={reconnecting}
                   emptyMessage={reconnecting ? 'Checking sandbox...' : 'Preparing workspace files...'}
+                />
+              )}
+            </TabsContent>
+            <TabsContent value="monitor" className="flex min-h-0 min-w-0">
+              {sandboxMissing ? (
+                <div className="flex h-full w-full items-center justify-center bg-background p-6 text-center text-sm text-muted-foreground">
+                  Create a new sandbox to view runtime metrics.
+                </div>
+              ) : connectFailed ? (
+                <div className="flex h-full w-full items-center justify-center bg-background p-6 text-center text-sm text-muted-foreground">
+                  Reconnect the workspace before viewing runtime metrics.
+                </div>
+              ) : (
+                <SandboxMonitor
+                  workspace={currentWorkspace}
+                  metrics={metricsQuery.data?.data.metrics ?? []}
+                  loading={metricsQuery.isFetching}
+                  error={metricsQuery.error}
+                  onRefresh={() => void metricsQuery.refetch()}
                 />
               )}
             </TabsContent>

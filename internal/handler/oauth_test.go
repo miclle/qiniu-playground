@@ -44,6 +44,8 @@ type fakeSandboxRuntime struct {
 	lastPTYEndpoint        string
 	lastFilesystemEndpoint string
 	lastFilesystemPath     string
+	lastMetricsEndpoint    string
+	lastMetricsParams      sandboxMetricsParams
 	lastRepo               string
 	lastPTYInput           string
 	lastPTYSize            sandboxPTYSize
@@ -185,6 +187,25 @@ func (f *fakeSandboxRuntime) ReadFileStream(ctx context.Context, apiKey, sandbox
 	f.lastFilesystemEndpoint = endpoint
 	f.lastFilesystemPath = filePath
 	return io.NopCloser(strings.NewReader("hello from sandbox\n")), nil
+}
+
+func (f *fakeSandboxRuntime) GetMetrics(ctx context.Context, apiKey, sandboxID, endpoint string, params sandboxMetricsParams) ([]sandboxRuntimeMetric, error) {
+	f.lastAPIKey = apiKey
+	f.lastMetricsEndpoint = endpoint
+	f.lastMetricsParams = params
+	now := time.Unix(1_780_000_000, 0).UTC()
+	return []sandboxRuntimeMetric{
+		{
+			CPUCount:      2,
+			CPUUsedPct:    12.5,
+			MemTotal:      4 * 1024 * 1024 * 1024,
+			MemUsed:       1536 * 1024 * 1024,
+			DiskTotal:     20 * 1024 * 1024 * 1024,
+			DiskUsed:      6 * 1024 * 1024 * 1024,
+			Timestamp:     now,
+			TimestampUnix: now.Unix(),
+		},
+	}, nil
 }
 
 func pathJoin(basePath, name string) string {

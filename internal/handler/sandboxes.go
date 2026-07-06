@@ -36,6 +36,22 @@ type sandboxSessionResponse struct {
 	LastConnectedAt string            `json:"last_connected_at,omitempty"`
 }
 
+type sandboxMetricsResponse struct {
+	SandboxID string                  `json:"sandbox_id"`
+	Metrics   []sandboxMetricResponse `json:"metrics"`
+}
+
+type sandboxMetricResponse struct {
+	Timestamp     string  `json:"timestamp"`
+	TimestampUnix int64   `json:"timestamp_unix"`
+	CPUCount      int32   `json:"cpu_count"`
+	CPUUsedPct    float32 `json:"cpu_used_pct"`
+	MemTotal      int64   `json:"mem_total"`
+	MemUsed       int64   `json:"mem_used"`
+	DiskTotal     int64   `json:"disk_total"`
+	DiskUsed      int64   `json:"disk_used"`
+}
+
 func (ctrl *Ctrl) SandboxSessions(c *fox.Context) any {
 	accountID, err := ctrl.accountIDFromRequest(c)
 	if err != nil {
@@ -133,6 +149,51 @@ func (ctrl *Ctrl) ConnectSandbox(c *fox.Context) any {
 	return ctrl.sandboxSessionResponse(c.Request, *session)
 }
 
+func (ctrl *Ctrl) SandboxMetrics(c *fox.Context) any {
+	accountID, err := ctrl.accountIDFromRequest(c)
+	if err != nil {
+		return httperrors.New(http.StatusUnauthorized, "unauthorized")
+	}
+	sandboxID := c.Param("sandboxID")
+	if sandboxID == "" {
+		return httperrors.New(http.StatusBadRequest, "sandbox id is required")
+	}
+	session, err := ctrl.service.SandboxSession(c.Request.Context(), accountID, sandboxID)
+	if err != nil {
+		return err
+	}
+	params, err := sandboxMetricsQuery(c.Request)
+	if err != nil {
+		return err
+	}
+	apiKey, err := ctrl.qiniuAPIKey(c, accountID)
+	if err != nil {
+		return err
+	}
+	metrics, err := ctrl.sandboxRuntime.GetMetrics(c.Request.Context(), apiKey, sandboxID, session.Region, params)
+	if err != nil {
+		return err
+	}
+	out := make([]sandboxMetricResponse, 0, len(metrics))
+	for _, metric := range metrics {
+		timestamp := ""
+		if !metric.Timestamp.IsZero() {
+			timestamp = metric.Timestamp.Format(time.RFC3339)
+		}
+		out = append(out, sandboxMetricResponse{
+			Timestamp:     timestamp,
+			TimestampUnix: metric.TimestampUnix,
+			CPUCount:      metric.CPUCount,
+			CPUUsedPct:    metric.CPUUsedPct,
+			MemTotal:      metric.MemTotal,
+			MemUsed:       metric.MemUsed,
+			DiskTotal:     metric.DiskTotal,
+			DiskUsed:      metric.DiskUsed,
+		})
+	}
+	return sandboxMetricsResponse{SandboxID: sandboxID, Metrics: out}
+}
+
 func (ctrl *Ctrl) qiniuAPIKey(c *fox.Context, accountID string) (string, error) {
 	credential, err := ctrl.service.QiniuCredential(c.Request.Context(), accountID)
 	if err != nil {
@@ -177,6 +238,33 @@ func (ctrl *Ctrl) sandboxSessionResponse(req *http.Request, session entity.Sandb
 		out.LastConnectedAt = session.LastConnectedAt.Format(time.RFC3339)
 	}
 	return out
+}
+
+func sandboxMetricsQuery(req *http.Request) (sandboxMetricsParams, error) {
+	query := req.URL.Query()
+	start, err := optionalInt64Query(query.Get("start"), "start")
+	if err != nil {
+		return sandboxMetricsParams{}, err
+	}
+	end, err := optionalInt64Query(query.Get("end"), "end")
+	if err != nil {
+		return sandboxMetricsParams{}, err
+	}
+	if start != nil && end != nil && *start > *end {
+		return sandboxMetricsParams{}, httperrors.New(http.StatusBadRequest, "start must be before end")
+	}
+	return sandboxMetricsParams{Start: start, End: end}, nil
+}
+
+func optionalInt64Query(value, name string) (*int64, error) {
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
+		return nil, httperrors.New(http.StatusBadRequest, name+" must be a non-negative unix timestamp")
+	}
+	return &parsed, nil
 }
 
 func sandboxMetadata(kind string, values map[string]string) map[string]string {

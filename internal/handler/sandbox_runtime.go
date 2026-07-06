@@ -3,12 +3,17 @@ package handler
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/qiniu/go-sdk/v7/reqid"
 	qiniusb "github.com/qiniu/go-sdk/v7/sandbox"
 
 	"github.com/miclle/qiniu-playground/internal/config"
@@ -23,6 +28,7 @@ type sandboxRuntime interface {
 	StartPTY(ctx context.Context, apiKey, sandboxID string, endpoint string, size sandboxPTYSize, onData func([]byte)) (sandboxPTYSession, error)
 	ListFiles(ctx context.Context, apiKey, sandboxID, endpoint, filePath string, depth uint32) ([]sandboxRuntimeFileEntry, error)
 	ReadFileStream(ctx context.Context, apiKey, sandboxID, endpoint, filePath string) (io.ReadCloser, error)
+	GetMetrics(ctx context.Context, apiKey, sandboxID, endpoint string, params sandboxMetricsParams) ([]sandboxRuntimeMetric, error)
 }
 
 type sandboxRuntimeTemplate struct {
@@ -96,6 +102,39 @@ type sandboxRuntimeFileEntry struct {
 	SymlinkTarget *string
 }
 
+type sandboxMetricsParams struct {
+	Start *int64
+	End   *int64
+}
+
+type sandboxRuntimeMetric struct {
+	CPUCount      int32     `json:"cpu_count"`
+	CPUUsedPct    float32   `json:"cpu_used_pct"`
+	MemTotal      int64     `json:"mem_total"`
+	MemUsed       int64     `json:"mem_used"`
+	DiskTotal     int64     `json:"disk_total"`
+	DiskUsed      int64     `json:"disk_used"`
+	Timestamp     time.Time `json:"timestamp"`
+	TimestampUnix int64     `json:"timestamp_unix"`
+}
+
+type sandboxMetricsAPIError struct {
+	StatusCode int
+	Body       []byte
+	Reqid      string
+}
+
+func (e *sandboxMetricsAPIError) Error() string {
+	prefix := fmt.Sprintf("api error: status %d", e.StatusCode)
+	if e.Reqid != "" {
+		prefix += ", reqid: " + e.Reqid
+	}
+	if len(e.Body) > 0 {
+		return prefix + ", body: " + string(e.Body)
+	}
+	return prefix
+}
+
 type sandboxPTYSession interface {
 	Send(ctx context.Context, data []byte) error
 	Resize(ctx context.Context, size sandboxPTYSize) error
@@ -110,6 +149,8 @@ type qiniuPTYSession struct {
 type qiniuSandboxRuntime struct {
 	endpoint string
 }
+
+var sandboxMetricsHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 func newSandboxRuntime(cfg config.SandboxConfig) sandboxRuntime {
 	return &qiniuSandboxRuntime{endpoint: cfg.Endpoint}
@@ -325,6 +366,67 @@ func (r *qiniuSandboxRuntime) ReadFileStream(ctx context.Context, apiKey, sandbo
 		return nil, err
 	}
 	return sb.Files().ReadStream(ctx, filePath)
+}
+
+func (r *qiniuSandboxRuntime) GetMetrics(ctx context.Context, apiKey, sandboxID, endpoint string, params sandboxMetricsParams) ([]sandboxRuntimeMetric, error) {
+	return r.getSandboxMetrics(ctx, apiKey, sandboxID, endpoint, params)
+}
+
+func (r *qiniuSandboxRuntime) getSandboxMetrics(ctx context.Context, apiKey, sandboxID, endpoint string, params sandboxMetricsParams) ([]sandboxRuntimeMetric, error) {
+	if endpoint == "" {
+		endpoint = r.endpoint
+	}
+	metricsURL, err := sandboxMetricsURL(endpoint, sandboxID, params)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metricsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if id, ok := reqid.ReqidFromContext(ctx); ok {
+		req.Header.Set("X-Reqid", id)
+	}
+	resp, err := sandboxMetricsHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &sandboxMetricsAPIError{StatusCode: resp.StatusCode, Body: body, Reqid: resp.Header.Get("X-Reqid")}
+	}
+	var metrics []sandboxRuntimeMetric
+	if err := json.Unmarshal(body, &metrics); err != nil {
+		return nil, err
+	}
+	return metrics, nil
+}
+
+func sandboxMetricsURL(endpoint, sandboxID string, params sandboxMetricsParams) (string, error) {
+	baseURL, err := url.Parse(endpoint)
+	if err != nil {
+		return "", err
+	}
+	metricsURL, err := baseURL.Parse("./sandboxes/" + url.PathEscape(sandboxID) + "/metrics")
+	if err != nil {
+		return "", err
+	}
+	values := metricsURL.Query()
+	if params.Start != nil {
+		values.Set("start", strconv.FormatInt(*params.Start, 10))
+	}
+	if params.End != nil {
+		values.Set("end", strconv.FormatInt(*params.End, 10))
+	}
+	metricsURL.RawQuery = values.Encode()
+	return metricsURL.String(), nil
 }
 
 func (r *qiniuSandboxRuntime) connectSandbox(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) (*qiniusb.Sandbox, error) {

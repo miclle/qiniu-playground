@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import type { ConnectWorkspaceOptions, Workspace } from 'src/api/workspaces'
 import type { SandboxFileEntry } from 'src/api/filesystem'
+import type { SandboxMetric } from 'src/api/sandboxes'
 import { queryClient } from 'src/lib/query-client'
 import routes from 'src/router'
 import WorkspaceDetail from './index'
@@ -84,6 +85,26 @@ const fetchSandboxFileContent = vi.fn<(
   headers: { 'content-type': 'text/markdown' },
 }))
 
+const fetchSandboxMetrics = vi.fn((
+  sandboxID: string,
+  options?: { start?: number, end?: number },
+) => apiResponse({
+  sandbox_id: sandboxID,
+  metrics: [
+    {
+      timestamp: '2026-06-01T10:00:00Z',
+      timestamp_unix: 1780308000,
+      cpu_count: 2,
+      cpu_used_pct: 16.5,
+      mem_total: 4 * 1024 * 1024 * 1024,
+      mem_used: 1536 * 1024 * 1024,
+      disk_total: 20 * 1024 * 1024 * 1024,
+      disk_used: 5 * 1024 * 1024 * 1024,
+    },
+  ] satisfies SandboxMetric[],
+  options,
+}))
+
 vi.mock('src/api/workspaces', () => ({
   workspaces: () => fetchWorkspaces(),
   connectWorkspace: (workspaceID: string, options?: { recreate?: boolean }) => connectWorkspace(workspaceID, options),
@@ -92,6 +113,10 @@ vi.mock('src/api/workspaces', () => ({
 vi.mock('src/api/filesystem', () => ({
   sandboxFiles: (sandboxID: string, path: string) => fetchSandboxFiles(sandboxID, path),
   sandboxFileContent: (sandboxID: string, path: string) => fetchSandboxFileContent(sandboxID, path),
+}))
+
+vi.mock('src/api/sandboxes', () => ({
+  sandboxMetrics: (sandboxID: string, options?: { start?: number, end?: number }) => fetchSandboxMetrics(sandboxID, options),
 }))
 
 vi.mock('src/components/TerminalPanel', () => ({
@@ -164,6 +189,7 @@ beforeEach(() => {
   }))
   fetchSandboxFiles.mockClear()
   fetchSandboxFileContent.mockClear()
+  fetchSandboxMetrics.mockClear()
   window.URL.createObjectURL = vi.fn(() => 'blob:download')
   window.URL.revokeObjectURL = vi.fn()
   HTMLAnchorElement.prototype.click = vi.fn()
@@ -197,6 +223,7 @@ test('renders a workspace workbench with assistant, files, and terminal panels',
 
   expect(container.textContent).toContain('Assistant')
   expect(container.textContent).toContain('Files')
+  expect(container.textContent).toContain('Monitor')
   expect(container.textContent).toContain('Terminal')
   expect(container.textContent).not.toContain('Terminal for sbox_456 at /workspace/qiniu__vision-tube')
   expect(container.textContent).toContain('..')
@@ -219,6 +246,7 @@ test('renders a workspace workbench with assistant, files, and terminal panels',
   expect(container.querySelector('a[href="/api/v1/sandboxes/sbox_456/ide/"]')).toBeTruthy()
   expect(container.querySelector('iframe[title="Code server IDE"]')).toBeNull()
   expect(fetchSandboxFiles).toHaveBeenCalledWith('sbox_456', '/workspace/qiniu__vision-tube')
+  expect(fetchSandboxMetrics).not.toHaveBeenCalled()
 
   const srcDirectory = Array.from(container.querySelectorAll('button')).find((button) => (
     button.textContent === 'src'
@@ -305,6 +333,53 @@ test('renders a workspace workbench with assistant, files, and terminal panels',
   })
   expect(container.textContent).toContain('Terminal for sbox_456 at /workspace/qiniu__vision-tube active true')
   expect(fetchSandboxFiles).toHaveBeenCalledTimes(fileFetchCountAfterTerminalOpen)
+})
+
+test('loads sandbox metrics from the monitor tab', async () => {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('VisionTube')
+  })
+  expect(fetchSandboxMetrics).not.toHaveBeenCalled()
+
+  const monitorTab = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === 'Monitor'
+  ))
+  expect(monitorTab).toBeTruthy()
+
+  await act(async () => {
+    monitorTab?.click()
+  })
+
+  await waitFor(() => {
+    expect(fetchSandboxMetrics).toHaveBeenCalledWith('sbox_456', expect.objectContaining({
+      start: expect.any(Number),
+      end: expect.any(Number),
+    }))
+    expect(container.textContent).toContain('Resource trend')
+    expect(container.textContent).toContain('16.5%')
+  })
+
+  expect(container.textContent).toContain('Runtime')
+  expect(container.textContent).toContain('CPU')
+  expect(container.textContent).toContain('Memory')
+  expect(container.textContent).toContain('Disk')
+  expect(container.textContent).toContain('1.50 GiB / 4.00 GiB')
 })
 
 test('falls back to the sandbox home directory when the workspace path is missing', async () => {

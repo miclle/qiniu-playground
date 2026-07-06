@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -76,5 +79,50 @@ func TestCloneOrUpdateRepositoryCommandPreservesExistingClone(t *testing.T) {
 	}
 	if strings.Contains(got, "|| true") {
 		t.Fatalf("clone command should not ignore remote configuration failures: %q", got)
+	}
+}
+
+func TestGetSandboxMetricsUsesReadOnlyAPI(t *testing.T) {
+	var gotPath, gotStart, gotEnd, gotAPIKey, gotAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		gotPath = req.URL.Path
+		gotStart = req.URL.Query().Get("start")
+		gotEnd = req.URL.Query().Get("end")
+		gotAPIKey = req.Header.Get("X-API-Key")
+		gotAuthorization = req.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{
+			"cpu_count": 4,
+			"cpu_used_pct": 12.5,
+			"mem_total": 1024,
+			"mem_used": 512,
+			"disk_total": 2048,
+			"disk_used": 256,
+			"timestamp_unix": 1780000000
+		}]`))
+	}))
+	defer server.Close()
+
+	start := int64(1780000000)
+	end := int64(1780000600)
+	runtime := &qiniuSandboxRuntime{}
+	metrics, err := runtime.GetMetrics(context.Background(), "api-key", "sandbox-2", server.URL, sandboxMetricsParams{
+		Start: &start,
+		End:   &end,
+	})
+	if err != nil {
+		t.Fatalf("GetMetrics() error = %v", err)
+	}
+	if gotPath != "/sandboxes/sandbox-2/metrics" {
+		t.Fatalf("path = %q, want metrics read API path", gotPath)
+	}
+	if gotStart != "1780000000" || gotEnd != "1780000600" {
+		t.Fatalf("query = start:%q end:%q, want requested range", gotStart, gotEnd)
+	}
+	if gotAPIKey != "api-key" || gotAuthorization != "Bearer api-key" {
+		t.Fatalf("auth headers = X-API-Key:%q Authorization:%q", gotAPIKey, gotAuthorization)
+	}
+	if len(metrics) != 1 || metrics[0].CPUUsedPct != 12.5 || metrics[0].TimestampUnix != 1780000000 {
+		t.Fatalf("metrics = %+v, want decoded response", metrics)
 	}
 }
