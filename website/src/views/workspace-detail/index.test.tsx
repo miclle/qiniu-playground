@@ -2,9 +2,10 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
-import { beforeEach, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import type { ConnectWorkspaceOptions, Workspace } from 'src/api/workspaces'
+import type { SandboxFileEntry } from 'src/api/filesystem'
 import { queryClient } from 'src/lib/query-client'
 import routes from 'src/router'
 import WorkspaceDetail from './index'
@@ -48,9 +49,49 @@ const fetchWorkspaces = vi.fn(() => apiResponse({
   ],
 }))
 
+const fetchSandboxFiles = vi.fn((
+  sandboxID: string,
+  path: string,
+) => apiResponse({
+  sandbox_id: sandboxID,
+  entries: [
+    {
+      name: 'README.md',
+      type: 'file',
+      path: `${path}/README.md`,
+      size: 42,
+      owner: 'user',
+      group: 'user',
+      permissions: '-rw-r--r--',
+    },
+    {
+      name: 'src',
+      type: 'dir',
+      path: `${path}/src`,
+      size: 0,
+      owner: 'user',
+      group: 'user',
+      permissions: 'drwxr-xr-x',
+    },
+  ] satisfies SandboxFileEntry[],
+}))
+
+const fetchSandboxFileContent = vi.fn<(
+  sandboxID: string,
+  path: string,
+) => Promise<{ data: Blob, headers: { 'content-type': string } }>>(() => Promise.resolve({
+  data: new Blob(['# Readme'], { type: 'text/markdown' }),
+  headers: { 'content-type': 'text/markdown' },
+}))
+
 vi.mock('src/api/workspaces', () => ({
   workspaces: () => fetchWorkspaces(),
   connectWorkspace: (workspaceID: string, options?: { recreate?: boolean }) => connectWorkspace(workspaceID, options),
+}))
+
+vi.mock('src/api/filesystem', () => ({
+  sandboxFiles: (sandboxID: string, path: string) => fetchSandboxFiles(sandboxID, path),
+  sandboxFileContent: (sandboxID: string, path: string) => fetchSandboxFileContent(sandboxID, path),
 }))
 
 vi.mock('src/api/auth', () => ({
@@ -113,7 +154,16 @@ beforeEach(() => {
     workspace_path: '/workspace/qiniu__vision-tube',
     ide_url: '/api/v1/sandboxes/sbox_456/ide/',
   }))
+  fetchSandboxFiles.mockClear()
+  fetchSandboxFileContent.mockClear()
+  window.URL.createObjectURL = vi.fn(() => 'blob:download')
+  window.URL.revokeObjectURL = vi.fn()
+  HTMLAnchorElement.prototype.click = vi.fn()
   document.body.innerHTML = ''
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 test('renders a workspace workbench with assistant, files, and code panels', async () => {
@@ -138,7 +188,13 @@ test('renders a workspace workbench with assistant, files, and code panels', asy
   })
 
   expect(container.textContent).toContain('Assistant')
-  expect(container.textContent).toContain('Code')
+  expect(container.textContent).toContain('Files')
+  expect(container.textContent).toContain('..')
+  expect(container.textContent).not.toContain('Files Tree')
+  expect(container.textContent).not.toContain('Size')
+  expect(container.textContent).not.toContain('42 B')
+  expect(container.querySelector('[role="separator"][aria-label="Resize file browser panes"]')).toBeTruthy()
+  expect(container.querySelector('[role="status"][aria-label="File browser status"]')).toBeTruthy()
   expect(container.textContent).toContain('/workspace/qiniu__vision-tube')
   expect(container.textContent).not.toContain('running')
   expect(connectWorkspace).toHaveBeenCalledWith('wks_123', undefined)
@@ -148,14 +204,151 @@ test('renders a workspace workbench with assistant, files, and code panels', asy
   expect(container.textContent).not.toContain('Region')
   expect(container.textContent).not.toContain('sandbox.example.com')
   expect(container.textContent).not.toContain('Runtime surface')
-  expect(container.textContent).not.toContain('Open code-server')
-  expect(Array.from(container.querySelectorAll('a')).some((link) => link.textContent === 'Open IDE')).toBe(false)
+  expect(Array.from(container.querySelectorAll('a')).some((link) => link.textContent === 'Open IDE')).toBe(true)
   expect(container.querySelector('a[href="https://github.com/qiniu/vision-tube"]')).toBeTruthy()
-  const ideFrame = container.querySelector('iframe[title="Code server IDE"]')
-  expect(ideFrame).toBeTruthy()
-  expect(ideFrame?.getAttribute('src')).toBe('/api/v1/sandboxes/sbox_456/ide/')
-  expect(ideFrame?.getAttribute('allow')).toBe('clipboard-read; clipboard-write')
-  expect(ideFrame?.hasAttribute('sandbox')).toBe(false)
+  expect(container.querySelector('a[href="/api/v1/sandboxes/sbox_456/ide/"]')).toBeTruthy()
+  expect(container.querySelector('iframe[title="Code server IDE"]')).toBeNull()
+  expect(fetchSandboxFiles).toHaveBeenCalledWith('sbox_456', '/workspace/qiniu__vision-tube')
+
+  const srcDirectory = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === 'src'
+  ))
+  expect(srcDirectory).toBeTruthy()
+
+  await act(async () => {
+    srcDirectory?.click()
+  })
+
+  await waitFor(() => {
+    expect(fetchSandboxFiles).toHaveBeenCalledWith('sbox_456', '/workspace/qiniu__vision-tube/src')
+  })
+
+  const parentButton = container.querySelector('button[aria-label="Open parent directory"]')
+  expect(parentButton).toBeTruthy()
+
+  await act(async () => {
+    parentButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+
+  await waitFor(() => {
+    expect(fetchSandboxFiles).toHaveBeenCalledWith('sbox_456', '/workspace')
+  })
+})
+
+test('falls back to the sandbox home directory when the workspace path is missing', async () => {
+  fetchSandboxFiles.mockImplementation((sandboxID: string, path: string) => {
+    if (path === '/workspace/qiniu__vision-tube') {
+      return Promise.reject({
+        message: 'Request failed with status code 404',
+        response: {
+          status: 404,
+          data: { error: 'no such file or directory' },
+        },
+      })
+    }
+
+    return apiResponse({
+      sandbox_id: sandboxID,
+      entries: [
+        {
+          name: '.profile',
+          type: 'file',
+          path: `${path}/.profile`,
+          size: 12,
+          owner: 'user',
+          group: 'user',
+          permissions: '-rw-r--r--',
+        },
+      ] satisfies SandboxFileEntry[],
+    })
+  })
+
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(fetchSandboxFiles).toHaveBeenCalledWith('sbox_456', '/home/user')
+    expect(container.textContent).toContain('.profile')
+  })
+
+  expect(fetchSandboxFiles).toHaveBeenCalledWith('sbox_456', '/workspace/qiniu__vision-tube')
+  expect(container.textContent).toContain('/home/user')
+  expect(container.textContent).not.toContain('Failed to load files.')
+})
+
+test('downloads an unpreviewed large file from the selected sandbox path', async () => {
+  fetchSandboxFiles.mockImplementation((sandboxID: string, path: string) => apiResponse({
+    sandbox_id: sandboxID,
+    entries: [
+      {
+        name: 'archive.zip',
+        type: 'file',
+        path: `${path}/archive.zip`,
+        size: 2 * 1024 * 1024,
+        owner: 'user',
+        group: 'user',
+        permissions: '-rw-r--r--',
+      },
+    ] satisfies SandboxFileEntry[],
+  }))
+
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('archive.zip')
+  })
+
+  const archiveButton = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === 'archive.zip'
+  ))
+  expect(archiveButton).toBeTruthy()
+
+  await act(async () => {
+    archiveButton?.click()
+  })
+
+  expect(container.textContent).toContain('Preview is unavailable for this file')
+  expect(fetchSandboxFileContent).not.toHaveBeenCalled()
+
+  const downloadButton = container.querySelector('button[aria-label="Download file"]')
+  expect(downloadButton).toBeTruthy()
+  expect(downloadButton?.hasAttribute('disabled')).toBe(false)
+
+  await act(async () => {
+    downloadButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+
+  await waitFor(() => {
+    expect(fetchSandboxFileContent).toHaveBeenCalledWith('sbox_456', '/workspace/qiniu__vision-tube/archive.zip')
+  })
+  expect(window.URL.createObjectURL).toHaveBeenCalled()
 })
 
 test('opens workspace metadata in a settings drawer', async () => {
@@ -303,7 +496,7 @@ test('resets connection state when navigating between workspaces', async () => {
   })
 
   await waitFor(() => {
-    expect(container.querySelector('iframe[title="Code server IDE"]')?.getAttribute('src')).toBe('/api/v1/sandboxes/sbox_789/ide/')
+    expect(container.querySelector('a[href="/api/v1/sandboxes/sbox_789/ide/"]')).toBeTruthy()
   })
 
   expect(container.textContent).toContain('DocsKit')
@@ -384,7 +577,7 @@ test('prompts to recreate when the workspace sandbox no longer exists', async ()
   })
 
   await waitFor(() => {
-    expect(container.querySelector('iframe[title="Code server IDE"]')?.getAttribute('src')).toBe('/api/v1/sandboxes/sbox_new/ide/')
+    expect(container.querySelector('a[href="/api/v1/sandboxes/sbox_new/ide/"]')).toBeTruthy()
   })
 
   expect(connectWorkspace).toHaveBeenLastCalledWith('wks_123', { recreate: true })
@@ -535,7 +728,7 @@ test('shows a retry action when workspace connection fails', async () => {
   })
 
   await waitFor(() => {
-    expect(container.querySelector('iframe[title="Code server IDE"]')?.getAttribute('src')).toBe('/api/v1/sandboxes/sbox_456/ide/')
+    expect(container.querySelector('a[href="/api/v1/sandboxes/sbox_456/ide/"]')).toBeTruthy()
   })
 
   expect(connectWorkspace).toHaveBeenLastCalledWith('wks_123', undefined)
@@ -680,6 +873,6 @@ test('hides stale connection errors while retrying', async () => {
   })
 
   await waitFor(() => {
-    expect(container.querySelector('iframe[title="Code server IDE"]')).toBeTruthy()
+    expect(container.querySelector('a[href="/api/v1/sandboxes/sbox_456/ide/"]')).toBeTruthy()
   })
 })

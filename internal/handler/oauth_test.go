@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -34,18 +35,20 @@ type fakeGitHubApp struct {
 }
 
 type fakeSandboxRuntime struct {
-	lastAPIKey            string
-	lastCreateRequest     sandboxRuntimeCreateRequest
-	lastWorkspaceRequest  sandboxRuntimeWorkspaceRequest
-	lastPrepareRequest    sandboxRuntimeRepositoryRequest
-	lastTemplatesEndpoint string
-	lastConnectEndpoint   string
-	lastPTYEndpoint       string
-	lastRepo              string
-	lastPTYInput          string
-	onPTYData             func([]byte)
-	templates             []sandboxRuntimeTemplate
-	connectErr            error
+	lastAPIKey             string
+	lastCreateRequest      sandboxRuntimeCreateRequest
+	lastWorkspaceRequest   sandboxRuntimeWorkspaceRequest
+	lastPrepareRequest     sandboxRuntimeRepositoryRequest
+	lastTemplatesEndpoint  string
+	lastConnectEndpoint    string
+	lastPTYEndpoint        string
+	lastFilesystemEndpoint string
+	lastFilesystemPath     string
+	lastRepo               string
+	lastPTYInput           string
+	onPTYData              func([]byte)
+	templates              []sandboxRuntimeTemplate
+	connectErr             error
 }
 
 type fakePTYSession struct {
@@ -163,6 +166,30 @@ func (f *fakeSandboxRuntime) StartPTY(ctx context.Context, apiKey, sandboxID str
 	f.onPTYData = onData
 	onData([]byte("connected\n"))
 	return &fakePTYSession{runtime: f}, nil
+}
+
+func (f *fakeSandboxRuntime) ListFiles(ctx context.Context, apiKey, sandboxID, endpoint, filePath string, depth uint32) ([]sandboxRuntimeFileEntry, error) {
+	f.lastAPIKey = apiKey
+	f.lastFilesystemEndpoint = endpoint
+	f.lastFilesystemPath = filePath
+	return []sandboxRuntimeFileEntry{
+		{Name: "README.md", Type: "file", Path: pathJoin(filePath, "README.md"), Size: 42, Permissions: "-rw-r--r--", Owner: "user", Group: "user"},
+		{Name: "src", Type: "dir", Path: pathJoin(filePath, "src"), Permissions: "drwxr-xr-x", Owner: "user", Group: "user"},
+	}, nil
+}
+
+func (f *fakeSandboxRuntime) ReadFileStream(ctx context.Context, apiKey, sandboxID, endpoint, filePath string) (io.ReadCloser, error) {
+	f.lastAPIKey = apiKey
+	f.lastFilesystemEndpoint = endpoint
+	f.lastFilesystemPath = filePath
+	return io.NopCloser(strings.NewReader("hello from sandbox\n")), nil
+}
+
+func pathJoin(basePath, name string) string {
+	if basePath == "/" {
+		return "/" + name
+	}
+	return strings.TrimRight(basePath, "/") + "/" + name
 }
 
 func (s *fakePTYSession) Send(ctx context.Context, data []byte) error {

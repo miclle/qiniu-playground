@@ -80,6 +80,8 @@ func (ctrl *Ctrl) RegisterRoutes(r *fox.Engine) {
 	api.GET("/sandboxes", ctrl.SandboxSessions)
 	api.POST("/sandboxes", ctrl.CreateSandbox)
 	api.Any("/sandboxes/:sandboxID/ide/*proxyPath", ctrl.SandboxIDEProxy)
+	api.GET("/sandboxes/:sandboxID/filesystem", ctrl.SandboxFiles)
+	api.GET("/sandboxes/:sandboxID/filesystem/content", ctrl.SandboxFileContent)
 	api.GET("/sandboxes/:sandboxID/pty", ctrl.SandboxPTY)
 	api.POST("/sandboxes/:sandboxID/connect", ctrl.ConnectSandbox)
 }

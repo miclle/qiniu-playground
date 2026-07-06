@@ -6,7 +6,8 @@ import {
   ArrowLeft,
   Bot,
   CheckCircle2,
-  Code2,
+  ExternalLink,
+  FolderTree,
   GitBranch,
   PanelsTopLeft,
   Rocket,
@@ -17,6 +18,7 @@ import { Link, useParams } from 'react-router-dom'
 import { connectWorkspace, workspaces as fetchWorkspaces } from 'src/api/workspaces'
 import type { Workspace } from 'src/api/workspaces'
 import { Button, buttonVariants } from 'src/components/ui/button'
+import { WorkspaceFileBrowser } from 'src/components/WorkspaceFileBrowser'
 import {
   Dialog,
   DialogClose,
@@ -198,12 +200,12 @@ function WorkspaceDetail() {
   const connectError = reconnecting ? null : connectWorkspaceMutation.error
   const sandboxMissing = !connectWorkspaceMutation.data && isMissingSandboxError(connectError)
   const connectFailed = Boolean(connectError && !sandboxMissing)
-  const canShowIDE = Boolean(currentWorkspace.ide_url && !sandboxMissing && !connectFailed && !reconnecting)
+  const canOpenIDE = Boolean(currentWorkspace.ide_url && !sandboxMissing && !connectFailed && !reconnecting)
   const missingSandboxLabel = workspace.sandbox_id || '-'
   const missingSandboxOpen = sandboxMissing && dismissedMissingWorkspaceID !== workspace.id
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
       <Dialog
         open={missingSandboxOpen}
         onOpenChange={(open) => {
@@ -251,7 +253,7 @@ function WorkspaceDetail() {
         </DialogContent>
       </Dialog>
 
-      <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
+      <header className="z-20 shrink-0 border-b bg-background/95 backdrop-blur">
         <div className="flex flex-col gap-3 px-5 py-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             <Link
@@ -279,6 +281,22 @@ function WorkspaceDetail() {
                 Repository
               </a>
             ) : null}
+            {canOpenIDE ? (
+              <a
+                className={cn(buttonVariants({ variant: 'default' }), 'no-underline')}
+                href={currentWorkspace.ide_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Open IDE
+              </a>
+            ) : (
+              <Button type="button" disabled>
+                <ExternalLink className="h-4 w-4" />
+                Open IDE
+              </Button>
+            )}
             <Sheet>
               <SheetTrigger
                 render={
@@ -334,8 +352,8 @@ function WorkspaceDetail() {
         </div>
       </header>
 
-      <div className="grid flex-1 grid-cols-1 xl:grid-cols-[360px_minmax(420px,1fr)]">
-        <section className="flex min-h-[520px] flex-col border-b xl:border-r xl:border-b-0">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[360px_minmax(420px,1fr)]">
+        <section className="flex min-h-0 flex-col border-b xl:border-r xl:border-b-0">
           <div className="flex items-center justify-between border-b px-4 py-3">
             <div className="flex items-center gap-2">
               <Bot className="h-4 w-4 text-primary" />
@@ -343,7 +361,7 @@ function WorkspaceDetail() {
             </div>
             <span className="text-xs text-muted-foreground">Workspace context</span>
           </div>
-          <div className="flex-1 space-y-4 overflow-auto p-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
             <div className="rounded-md border bg-secondary/40 p-4">
               <p className="text-sm font-medium">Ready to work in {title}</p>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
@@ -368,69 +386,63 @@ function WorkspaceDetail() {
           </div>
         </section>
 
-        <section className="flex min-h-[520px] flex-col border-b xl:border-r xl:border-b-0">
-          <div className="flex items-center justify-between border-b px-4 py-3">
+        <section className="flex min-h-0 flex-col border-b xl:border-r xl:border-b-0">
+          <div className="flex items-center border-b px-4 py-3">
             <div className="flex items-center gap-2">
-              <Code2 className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold">Code</h2>
+              <FolderTree className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold">Files</h2>
             </div>
-            <span className="text-xs text-muted-foreground">{currentWorkspace.workspace_path || '/workspace'}</span>
           </div>
-          <div className="flex flex-1">
-            {canShowIDE ? (
-              <iframe
-                title="Code server IDE"
-                src={currentWorkspace.ide_url}
-                allow="clipboard-read; clipboard-write"
-                referrerPolicy="no-referrer"
-                className="h-[calc(100vh-6.5rem)] min-h-[640px] w-full border-0 bg-background"
-              />
-            ) : (
-              <div className="flex h-[calc(100vh-6.5rem)] min-h-[640px] w-full items-center justify-center bg-background p-6 text-sm text-muted-foreground">
-                {sandboxMissing ? (
-                  <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
-                      <AlertTriangle className="h-5 w-5" />
-                    </div>
-                    <div className="space-y-2">
-                      <h3 className="text-base font-semibold text-foreground">Sandbox unavailable</h3>
-                      <p>Create a new sandbox to continue working in this workspace.</p>
-                    </div>
-                    <div className="w-full rounded-md border bg-secondary/30 px-4 py-3 text-left">
-                      <span className="text-muted-foreground">Missing sandbox</span>
-                      <p className="mt-1 truncate font-mono text-xs text-foreground">{missingSandboxLabel}</p>
-                    </div>
-                    <Button
-                      type="button"
-                      onClick={() => connectWorkspaceMutation.mutate({ recreate: true })}
-                      disabled={connectWorkspaceMutation.isPending}
-                    >
-                      {connectWorkspaceMutation.isPending ? 'Creating...' : 'Create new sandbox'}
-                    </Button>
+          <div className="flex min-h-0 min-w-0 flex-1">
+            {sandboxMissing ? (
+              <div className="flex h-full w-full items-center justify-center bg-background p-6 text-sm text-muted-foreground">
+                <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
+                    <AlertTriangle className="h-5 w-5" />
                   </div>
-                ) : connectFailed ? (
-                  <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
-                      <AlertTriangle className="h-5 w-5" />
-                    </div>
-                    <div className="space-y-2">
-                      <h3 className="text-base font-semibold text-foreground">Workspace connection failed</h3>
-                      <p>{connectionErrorMessage(connectError)}</p>
-                    </div>
-                    <Button
-                      type="button"
-                      onClick={() => connectWorkspaceMutation.mutate({})}
-                      disabled={connectWorkspaceMutation.isPending}
-                    >
-                      {connectWorkspaceMutation.isPending ? 'Retrying...' : 'Retry'}
-                    </Button>
+                  <div className="space-y-2">
+                    <h3 className="text-base font-semibold text-foreground">Sandbox unavailable</h3>
+                    <p>Create a new sandbox to continue working in this workspace.</p>
                   </div>
-                ) : reconnecting ? (
-                  'Checking sandbox...'
-                ) : (
-                  'Preparing code-server...'
-                )}
+                  <div className="w-full rounded-md border bg-secondary/30 px-4 py-3 text-left">
+                    <span className="text-muted-foreground">Missing sandbox</span>
+                    <p className="mt-1 truncate font-mono text-xs text-foreground">{missingSandboxLabel}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={() => connectWorkspaceMutation.mutate({ recreate: true })}
+                    disabled={connectWorkspaceMutation.isPending}
+                  >
+                    {connectWorkspaceMutation.isPending ? 'Creating...' : 'Create new sandbox'}
+                  </Button>
+                </div>
               </div>
+            ) : connectFailed ? (
+              <div className="flex h-full w-full items-center justify-center bg-background p-6 text-sm text-muted-foreground">
+                <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
+                    <AlertTriangle className="h-5 w-5" />
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-base font-semibold text-foreground">Workspace connection failed</h3>
+                    <p>{connectionErrorMessage(connectError)}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={() => connectWorkspaceMutation.mutate({})}
+                    disabled={connectWorkspaceMutation.isPending}
+                  >
+                    {connectWorkspaceMutation.isPending ? 'Retrying...' : 'Retry'}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <WorkspaceFileBrowser
+                sandboxID={currentWorkspace.sandbox_id}
+                workspacePath={currentWorkspace.workspace_path}
+                disabled={reconnecting}
+                emptyMessage={reconnecting ? 'Checking sandbox...' : 'Preparing workspace files...'}
+              />
             )}
           </div>
         </section>

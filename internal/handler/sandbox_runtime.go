@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 	"time"
@@ -20,6 +21,8 @@ type sandboxRuntime interface {
 	PrepareWorkspace(ctx context.Context, apiKey string, req sandboxRuntimeWorkspaceRequest) (*sandboxRuntimeWorkspace, error)
 	PrepareRepository(ctx context.Context, apiKey string, req sandboxRuntimeRepositoryRequest) (*sandboxRuntimeWorkspace, error)
 	StartPTY(ctx context.Context, apiKey, sandboxID string, endpoint string, size sandboxPTYSize, onData func([]byte)) (sandboxPTYSession, error)
+	ListFiles(ctx context.Context, apiKey, sandboxID, endpoint, filePath string, depth uint32) ([]sandboxRuntimeFileEntry, error)
+	ReadFileStream(ctx context.Context, apiKey, sandboxID, endpoint, filePath string) (io.ReadCloser, error)
 }
 
 type sandboxRuntimeTemplate struct {
@@ -78,6 +81,19 @@ type sandboxRuntimeWorkspace struct {
 type sandboxPTYSize struct {
 	Cols uint32
 	Rows uint32
+}
+
+type sandboxRuntimeFileEntry struct {
+	Name          string
+	Type          string
+	Path          string
+	Size          int64
+	Mode          uint32
+	Permissions   string
+	Owner         string
+	Group         string
+	ModifiedTime  time.Time
+	SymlinkTarget *string
 }
 
 type sandboxPTYSession interface {
@@ -262,17 +278,7 @@ func (r *qiniuSandboxRuntime) PrepareRepository(ctx context.Context, apiKey stri
 }
 
 func (r *qiniuSandboxRuntime) StartPTY(ctx context.Context, apiKey, sandboxID string, endpoint string, size sandboxPTYSize, onData func([]byte)) (sandboxPTYSession, error) {
-	if endpoint == "" {
-		endpoint = r.endpoint
-	}
-	client, err := qiniusb.NewClient(&qiniusb.Config{
-		APIKey:   apiKey,
-		Endpoint: endpoint,
-	})
-	if err != nil {
-		return nil, err
-	}
-	sb, err := client.Connect(ctx, sandboxID, qiniusb.ConnectParams{Timeout: 120})
+	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, 120)
 	if err != nil {
 		return nil, err
 	}
@@ -284,6 +290,55 @@ func (r *qiniuSandboxRuntime) StartPTY(ctx context.Context, apiKey, sandboxID st
 		return nil, err
 	}
 	return &qiniuPTYSession{sandbox: sb, handle: handle}, nil
+}
+
+func (r *qiniuSandboxRuntime) ListFiles(ctx context.Context, apiKey, sandboxID, endpoint, filePath string, depth uint32) ([]sandboxRuntimeFileEntry, error) {
+	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, 120)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := sb.Files().List(ctx, filePath, qiniusb.WithDepth(depth))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sandboxRuntimeFileEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, sandboxRuntimeFileEntry{
+			Name:          entry.Name,
+			Type:          string(entry.Type),
+			Path:          entry.Path,
+			Size:          entry.Size,
+			Mode:          entry.Mode,
+			Permissions:   entry.Permissions,
+			Owner:         entry.Owner,
+			Group:         entry.Group,
+			ModifiedTime:  entry.ModifiedTime,
+			SymlinkTarget: entry.SymlinkTarget,
+		})
+	}
+	return out, nil
+}
+
+func (r *qiniuSandboxRuntime) ReadFileStream(ctx context.Context, apiKey, sandboxID, endpoint, filePath string) (io.ReadCloser, error) {
+	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, 120)
+	if err != nil {
+		return nil, err
+	}
+	return sb.Files().ReadStream(ctx, filePath)
+}
+
+func (r *qiniuSandboxRuntime) connectSandbox(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) (*qiniusb.Sandbox, error) {
+	if endpoint == "" {
+		endpoint = r.endpoint
+	}
+	client, err := qiniusb.NewClient(&qiniusb.Config{
+		APIKey:   apiKey,
+		Endpoint: endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return client.Connect(ctx, sandboxID, qiniusb.ConnectParams{Timeout: timeoutSeconds})
 }
 
 func (s *qiniuPTYSession) Send(ctx context.Context, data []byte) error {

@@ -76,6 +76,141 @@ func TestConnectSandboxUpdatesSession(t *testing.T) {
 	}
 }
 
+func TestSandboxFilesListUsesSessionRegion(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	if _, err := ctrl.service.SaveSandboxSession(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.SandboxSessionInput{
+		SandboxID:  "sandbox-2",
+		TemplateID: "base",
+		State:      "running",
+		Region:     "https://cn-yangzhou-1-sandbox.qiniuapi.com",
+	}); err != nil {
+		t.Fatalf("save sandbox session: %v", err)
+	}
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sandbox-2/filesystem?path=/workspace/project", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	runtime := ctrl.sandboxRuntime.(*fakeSandboxRuntime)
+	if runtime.lastAPIKey != "qiniu-api-key" {
+		t.Fatalf("runtime api key = %q, want decrypted key", runtime.lastAPIKey)
+	}
+	if runtime.lastFilesystemEndpoint != "https://cn-yangzhou-1-sandbox.qiniuapi.com" {
+		t.Fatalf("filesystem endpoint = %q, want session region", runtime.lastFilesystemEndpoint)
+	}
+	if runtime.lastFilesystemPath != "/workspace/project" {
+		t.Fatalf("filesystem path = %q, want /workspace/project", runtime.lastFilesystemPath)
+	}
+	var payload sandboxFilesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Entries) != 2 || payload.Entries[0].Name != "README.md" || payload.Entries[1].Type != "dir" {
+		t.Fatalf("payload entries = %+v, want fake files", payload.Entries)
+	}
+}
+
+func TestSandboxFilesRejectsLargeDepth(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	if _, err := ctrl.service.SaveSandboxSession(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.SandboxSessionInput{
+		SandboxID:  "sandbox-2",
+		TemplateID: "base",
+		State:      "running",
+		Region:     "https://cn-yangzhou-1-sandbox.qiniuapi.com",
+	}); err != nil {
+		t.Fatalf("save sandbox session: %v", err)
+	}
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sandbox-2/filesystem?path=/&depth=9", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	runtime := ctrl.sandboxRuntime.(*fakeSandboxRuntime)
+	if runtime.lastFilesystemPath != "" {
+		t.Fatalf("filesystem path = %q, want runtime not called", runtime.lastFilesystemPath)
+	}
+}
+
+func TestSandboxFileContentRejectsRelativePath(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	if _, err := ctrl.service.SaveSandboxSession(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.SandboxSessionInput{
+		SandboxID:  "sandbox-2",
+		TemplateID: "base",
+		State:      "running",
+	}); err != nil {
+		t.Fatalf("save sandbox session: %v", err)
+	}
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sandbox-2/filesystem/content?path=README.md", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSandboxFileContentReadsFile(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	if _, err := ctrl.service.SaveSandboxSession(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.SandboxSessionInput{
+		SandboxID:  "sandbox-2",
+		TemplateID: "base",
+		State:      "running",
+		Region:     "https://cn-yangzhou-1-sandbox.qiniuapi.com",
+	}); err != nil {
+		t.Fatalf("save sandbox session: %v", err)
+	}
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sandbox-2/filesystem/content?path=/workspace/project/README.md", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "hello from sandbox\n" {
+		t.Fatalf("body = %q, want file content", got)
+	}
+	runtime := ctrl.sandboxRuntime.(*fakeSandboxRuntime)
+	if runtime.lastFilesystemPath != "/workspace/project/README.md" {
+		t.Fatalf("filesystem path = %q, want requested file", runtime.lastFilesystemPath)
+	}
+}
+
 func saveEncryptedAPIKey(t *testing.T, ctrl *Ctrl, accountID, apiKey string) {
 	t.Helper()
 
