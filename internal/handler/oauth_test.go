@@ -46,6 +46,7 @@ type fakeSandboxRuntime struct {
 	lastFilesystemPath     string
 	lastRepo               string
 	lastPTYInput           string
+	lastPTYSize            sandboxPTYSize
 	onPTYData              func([]byte)
 	templates              []sandboxRuntimeTemplate
 	connectErr             error
@@ -163,6 +164,7 @@ func (f *fakeSandboxRuntime) PrepareRepository(ctx context.Context, apiKey strin
 func (f *fakeSandboxRuntime) StartPTY(ctx context.Context, apiKey, sandboxID string, endpoint string, size sandboxPTYSize, onData func([]byte)) (sandboxPTYSession, error) {
 	f.lastAPIKey = apiKey
 	f.lastPTYEndpoint = endpoint
+	f.lastPTYSize = size
 	f.onPTYData = onData
 	onData([]byte("connected\n"))
 	return &fakePTYSession{runtime: f}, nil
@@ -199,6 +201,7 @@ func (s *fakePTYSession) Send(ctx context.Context, data []byte) error {
 }
 
 func (s *fakePTYSession) Resize(ctx context.Context, size sandboxPTYSize) error {
+	s.runtime.lastPTYSize = size
 	return nil
 }
 

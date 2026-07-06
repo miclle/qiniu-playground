@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import type { AxiosError } from 'axios'
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -10,14 +10,18 @@ import {
   FolderTree,
   GitBranch,
   PanelsTopLeft,
+  Plus,
   Rocket,
   Settings,
+  SquareTerminal,
+  X,
 } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 
 import { connectWorkspace, workspaces as fetchWorkspaces } from 'src/api/workspaces'
 import type { Workspace } from 'src/api/workspaces'
 import { Button, buttonVariants } from 'src/components/ui/button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from 'src/components/ui/tabs'
 import { WorkspaceFileBrowser } from 'src/components/WorkspaceFileBrowser'
 import {
   Dialog,
@@ -38,6 +42,20 @@ import {
 } from 'src/components/ui/sheet'
 import { cn } from 'src/lib/utils'
 import { queryClient } from 'src/lib/query-client'
+
+const TerminalPanel = lazy(() => import('src/components/TerminalPanel'))
+
+type WorkbenchTab = string
+
+interface TerminalSession {
+  id: string
+  label: string
+  opened: boolean
+}
+
+function initialTerminalSessions(): TerminalSession[] {
+  return [{ id: 'terminal-1', label: 'Terminal', opened: false }]
+}
 
 function githubRepositoryURL(fullName?: string) {
   return fullName ? `https://github.com/${fullName}` : ''
@@ -87,6 +105,9 @@ function connectionErrorMessage(error: unknown) {
 function WorkspaceDetail() {
   const { workspaceId } = useParams()
   const [dismissedMissingWorkspaceID, setDismissedMissingWorkspaceID] = useState('')
+  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('files')
+  const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>(initialTerminalSessions)
+  const [nextTerminalNumber, setNextTerminalNumber] = useState(2)
   const previousWorkspaceIDRef = useRef<string | undefined>(undefined)
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
@@ -131,7 +152,45 @@ function WorkspaceDetail() {
     previousWorkspaceIDRef.current = workspaceId
     connectWorkspaceMutation.reset()
     setDismissedMissingWorkspaceID('')
+    setWorkbenchTab('files')
+    setTerminalSessions(initialTerminalSessions())
+    setNextTerminalNumber(2)
   }, [connectWorkspaceMutation.reset, workspaceId])
+
+  const handleWorkbenchTabChange = (value: any) => {
+    const nextTab = typeof value === 'string' ? value : 'files'
+    setWorkbenchTab(nextTab)
+    if (nextTab.startsWith('terminal-')) {
+      setTerminalSessions((current) => current.map((session) => (
+        session.id === nextTab ? { ...session, opened: true } : session
+      )))
+    }
+  }
+
+  const openNewTerminal = () => {
+    const terminalNumber = nextTerminalNumber
+    const nextSession: TerminalSession = {
+      id: `terminal-${terminalNumber}`,
+      label: `Terminal ${terminalNumber}`,
+      opened: true,
+    }
+    setTerminalSessions((current) => [...current, nextSession])
+    setNextTerminalNumber((value) => value + 1)
+    setWorkbenchTab(nextSession.id)
+  }
+
+  const closeTerminal = (sessionID: string) => {
+    const closingIndex = terminalSessions.findIndex((session) => session.id === sessionID)
+    if (closingIndex === -1) {
+      return
+    }
+    const nextSessions = terminalSessions.filter((session) => session.id !== sessionID)
+    setTerminalSessions(nextSessions)
+    if (workbenchTab === sessionID) {
+      const fallbackSession = nextSessions[Math.min(closingIndex, nextSessions.length - 1)]
+      setWorkbenchTab(fallbackSession?.id ?? 'files')
+    }
+  }
 
   useEffect(() => {
     if (
@@ -352,7 +411,7 @@ function WorkspaceDetail() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[360px_minmax(420px,1fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[320px_minmax(480px,1fr)]">
         <section className="flex min-h-0 flex-col border-b xl:border-r xl:border-b-0">
           <div className="flex items-center justify-between border-b px-4 py-3">
             <div className="flex items-center gap-2">
@@ -386,65 +445,129 @@ function WorkspaceDetail() {
           </div>
         </section>
 
-        <section className="flex min-h-0 flex-col border-b xl:border-r xl:border-b-0">
-          <div className="flex items-center border-b px-4 py-3">
-            <div className="flex items-center gap-2">
-              <FolderTree className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold">Files</h2>
+        <section className="flex min-h-0 flex-col">
+          <Tabs value={workbenchTab} onValueChange={handleWorkbenchTabChange} className="min-h-0 flex-1">
+            <div className="flex shrink-0 items-center border-b bg-background">
+              <TabsList className="border-b-0">
+                <TabsTrigger value="files">
+                  <FolderTree className="h-4 w-4" />
+                  Files
+                </TabsTrigger>
+                {terminalSessions.map((session) => (
+                  <div key={session.id} role="presentation" className="inline-flex h-9 shrink-0 items-center">
+                    <TabsTrigger value={session.id} className="pr-1">
+                      <SquareTerminal className="h-4 w-4" />
+                      {session.label}
+                    </TabsTrigger>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      className="-ml-1 h-7 w-7 text-muted-foreground hover:text-foreground"
+                      aria-label={`Close ${session.label}`}
+                      onClick={() => closeTerminal(session.id)}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="ml-1"
+                  onClick={openNewTerminal}
+                  aria-label="Open new terminal"
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </TabsList>
             </div>
-          </div>
-          <div className="flex min-h-0 min-w-0 flex-1">
-            {sandboxMissing ? (
-              <div className="flex h-full w-full items-center justify-center bg-background p-6 text-sm text-muted-foreground">
-                <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
-                    <AlertTriangle className="h-5 w-5" />
+            <TabsContent value="files" keepMounted className="flex min-h-0 min-w-0">
+              {sandboxMissing ? (
+                <div className="flex h-full w-full items-center justify-center bg-background p-6 text-sm text-muted-foreground">
+                  <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
+                      <AlertTriangle className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-base font-semibold text-foreground">Sandbox unavailable</h3>
+                      <p>Create a new sandbox to continue working in this workspace.</p>
+                    </div>
+                    <div className="w-full rounded-md border bg-secondary/30 px-4 py-3 text-left">
+                      <span className="text-muted-foreground">Missing sandbox</span>
+                      <p className="mt-1 truncate font-mono text-xs text-foreground">{missingSandboxLabel}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={() => connectWorkspaceMutation.mutate({ recreate: true })}
+                      disabled={connectWorkspaceMutation.isPending}
+                    >
+                      {connectWorkspaceMutation.isPending ? 'Creating...' : 'Create new sandbox'}
+                    </Button>
                   </div>
-                  <div className="space-y-2">
-                    <h3 className="text-base font-semibold text-foreground">Sandbox unavailable</h3>
-                    <p>Create a new sandbox to continue working in this workspace.</p>
-                  </div>
-                  <div className="w-full rounded-md border bg-secondary/30 px-4 py-3 text-left">
-                    <span className="text-muted-foreground">Missing sandbox</span>
-                    <p className="mt-1 truncate font-mono text-xs text-foreground">{missingSandboxLabel}</p>
-                  </div>
-                  <Button
-                    type="button"
-                    onClick={() => connectWorkspaceMutation.mutate({ recreate: true })}
-                    disabled={connectWorkspaceMutation.isPending}
-                  >
-                    {connectWorkspaceMutation.isPending ? 'Creating...' : 'Create new sandbox'}
-                  </Button>
                 </div>
-              </div>
-            ) : connectFailed ? (
-              <div className="flex h-full w-full items-center justify-center bg-background p-6 text-sm text-muted-foreground">
-                <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
-                    <AlertTriangle className="h-5 w-5" />
+              ) : connectFailed ? (
+                <div className="flex h-full w-full items-center justify-center bg-background p-6 text-sm text-muted-foreground">
+                  <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full border bg-amber-50 text-amber-700">
+                      <AlertTriangle className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-base font-semibold text-foreground">Workspace connection failed</h3>
+                      <p>{connectionErrorMessage(connectError)}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={() => connectWorkspaceMutation.mutate({})}
+                      disabled={connectWorkspaceMutation.isPending}
+                    >
+                      {connectWorkspaceMutation.isPending ? 'Retrying...' : 'Retry'}
+                    </Button>
                   </div>
-                  <div className="space-y-2">
-                    <h3 className="text-base font-semibold text-foreground">Workspace connection failed</h3>
-                    <p>{connectionErrorMessage(connectError)}</p>
-                  </div>
-                  <Button
-                    type="button"
-                    onClick={() => connectWorkspaceMutation.mutate({})}
-                    disabled={connectWorkspaceMutation.isPending}
-                  >
-                    {connectWorkspaceMutation.isPending ? 'Retrying...' : 'Retry'}
-                  </Button>
                 </div>
-              </div>
-            ) : (
-              <WorkspaceFileBrowser
-                sandboxID={currentWorkspace.sandbox_id}
-                workspacePath={currentWorkspace.workspace_path}
-                disabled={reconnecting}
-                emptyMessage={reconnecting ? 'Checking sandbox...' : 'Preparing workspace files...'}
-              />
-            )}
-          </div>
+              ) : (
+                <WorkspaceFileBrowser
+                  sandboxID={currentWorkspace.sandbox_id}
+                  workspacePath={currentWorkspace.workspace_path}
+                  disabled={reconnecting}
+                  emptyMessage={reconnecting ? 'Checking sandbox...' : 'Preparing workspace files...'}
+                />
+              )}
+            </TabsContent>
+            {terminalSessions.map((session) => (
+              <TabsContent key={session.id} value={session.id} keepMounted className="bg-[#0b0f14]">
+                {sandboxMissing ? (
+                  <div className="flex h-full items-center justify-center rounded-md border border-dashed bg-background p-6 text-center text-sm text-muted-foreground">
+                    Create a new sandbox to open a command line.
+                  </div>
+                ) : connectFailed ? (
+                  <div className="flex h-full items-center justify-center rounded-md border border-dashed bg-background p-6 text-center text-sm text-muted-foreground">
+                    Reconnect the workspace before opening a command line.
+                  </div>
+                ) : currentWorkspace.sandbox_id && session.opened ? (
+                  <Suspense
+                    fallback={
+                      <div className="flex h-full items-center justify-center bg-[#0b0f14] p-6 text-sm text-slate-300">
+                        Loading terminal...
+                      </div>
+                    }
+                  >
+                    <TerminalPanel
+                      sandboxID={currentWorkspace.sandbox_id}
+                      workspacePath={currentWorkspace.workspace_path}
+                      disabled={reconnecting}
+                      active={workbenchTab === session.id}
+                    />
+                  </Suspense>
+                ) : (
+                  <div className="flex h-full items-center justify-center rounded-md border border-dashed bg-background p-6 text-center text-sm text-muted-foreground">
+                    Waiting for sandbox...
+                  </div>
+                )}
+              </TabsContent>
+            ))}
+          </Tabs>
         </section>
 
       </div>

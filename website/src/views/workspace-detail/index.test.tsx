@@ -94,6 +94,14 @@ vi.mock('src/api/filesystem', () => ({
   sandboxFileContent: (sandboxID: string, path: string) => fetchSandboxFileContent(sandboxID, path),
 }))
 
+vi.mock('src/components/TerminalPanel', () => ({
+  default: ({ sandboxID, workspacePath, active }: { sandboxID: string, workspacePath?: string, active?: boolean }) => (
+    <div data-testid="terminal-panel">
+      Terminal for {sandboxID} at {workspacePath} active {String(active)}
+    </div>
+  ),
+}))
+
 vi.mock('src/api/auth', () => ({
   currentUser: () => apiResponse({
     account_id: 'acct_1',
@@ -166,7 +174,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-test('renders a workspace workbench with assistant, files, and code panels', async () => {
+test('renders a workspace workbench with assistant, files, and terminal panels', async () => {
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -189,6 +197,8 @@ test('renders a workspace workbench with assistant, files, and code panels', asy
 
   expect(container.textContent).toContain('Assistant')
   expect(container.textContent).toContain('Files')
+  expect(container.textContent).toContain('Terminal')
+  expect(container.textContent).not.toContain('Terminal for sbox_456 at /workspace/qiniu__vision-tube')
   expect(container.textContent).toContain('..')
   expect(container.textContent).not.toContain('Files Tree')
   expect(container.textContent).not.toContain('Size')
@@ -233,6 +243,68 @@ test('renders a workspace workbench with assistant, files, and code panels', asy
   await waitFor(() => {
     expect(fetchSandboxFiles).toHaveBeenCalledWith('sbox_456', '/workspace')
   })
+
+  const terminalTab = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === 'Terminal'
+  ))
+  expect(terminalTab).toBeTruthy()
+
+  await act(async () => {
+    terminalTab?.click()
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Terminal for sbox_456 at /workspace/qiniu__vision-tube active true')
+  })
+  expect(container.querySelectorAll('[data-testid="terminal-panel"]')).toHaveLength(1)
+
+  const fileFetchCountAfterTerminalOpen = fetchSandboxFiles.mock.calls.length
+  const filesTab = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === 'Files'
+  ))
+  expect(filesTab).toBeTruthy()
+
+  await act(async () => {
+    filesTab?.click()
+  })
+
+  expect(fetchSandboxFiles).toHaveBeenCalledTimes(fileFetchCountAfterTerminalOpen)
+  expect(container.textContent).toContain('Terminal for sbox_456 at /workspace/qiniu__vision-tube active false')
+  expect(container.querySelectorAll('[data-testid="terminal-panel"]')).toHaveLength(1)
+
+  await act(async () => {
+    terminalTab?.click()
+  })
+
+  expect(container.textContent).toContain('Terminal for sbox_456 at /workspace/qiniu__vision-tube active true')
+  expect(fetchSandboxFiles).toHaveBeenCalledTimes(fileFetchCountAfterTerminalOpen)
+
+  const newTerminalButton = container.querySelector('button[aria-label="Open new terminal"]')
+  expect(newTerminalButton).toBeTruthy()
+
+  await act(async () => {
+    newTerminalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Terminal 2')
+    expect(container.querySelectorAll('[data-testid="terminal-panel"]')).toHaveLength(2)
+  })
+  expect(fetchSandboxFiles).toHaveBeenCalledTimes(fileFetchCountAfterTerminalOpen)
+
+  const closeTerminal2 = container.querySelector('[aria-label="Close Terminal 2"]')
+  expect(closeTerminal2).toBeTruthy()
+
+  await act(async () => {
+    closeTerminal2?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).not.toContain('Terminal 2')
+    expect(container.querySelectorAll('[data-testid="terminal-panel"]')).toHaveLength(1)
+  })
+  expect(container.textContent).toContain('Terminal for sbox_456 at /workspace/qiniu__vision-tube active true')
+  expect(fetchSandboxFiles).toHaveBeenCalledTimes(fileFetchCountAfterTerminalOpen)
 })
 
 test('falls back to the sandbox home directory when the workspace path is missing', async () => {

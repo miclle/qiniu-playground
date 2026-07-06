@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -25,6 +26,13 @@ var ptyUpgrader = websocket.Upgrader{
 		}
 		return strings.EqualFold(originURL.Host, r.Host)
 	},
+}
+
+type sandboxPTYClientMessage struct {
+	Type string `json:"type"`
+	Data string `json:"data,omitempty"`
+	Cols uint32 `json:"cols,omitempty"`
+	Rows uint32 `json:"rows,omitempty"`
 }
 
 func (ctrl *Ctrl) SandboxPTY(c *fox.Context) any {
@@ -53,9 +61,18 @@ func (ctrl *Ctrl) SandboxPTY(c *fox.Context) any {
 	}()
 
 	output := make(chan []byte, 32)
+	stop := make(chan struct{})
+	stopOutput := func() {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+	}
 	pty, err := ctrl.sandboxRuntime.StartPTY(c.Request.Context(), apiKey, sandboxID, session.Region, sandboxPTYSize{Cols: 80, Rows: 24}, func(data []byte) {
 		select {
 		case output <- data:
+		case <-stop:
 		case <-c.Request.Context().Done():
 		}
 	})
@@ -68,7 +85,6 @@ func (ctrl *Ctrl) SandboxPTY(c *fox.Context) any {
 		_ = pty.Close(cleanupCtx)
 	}()
 
-	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -90,7 +106,7 @@ func (ctrl *Ctrl) SandboxPTY(c *fox.Context) any {
 	for {
 		messageType, reader, err := conn.NextReader()
 		if err != nil {
-			close(stop)
+			stopOutput()
 			<-done
 			return nil
 		}
@@ -99,14 +115,35 @@ func (ctrl *Ctrl) SandboxPTY(c *fox.Context) any {
 		}
 		data, err := io.ReadAll(reader)
 		if err != nil {
-			close(stop)
+			stopOutput()
 			<-done
 			return nil
 		}
-		if err := pty.Send(c.Request.Context(), data); err != nil {
-			close(stop)
+		if err := handlePTYClientMessage(c.Request.Context(), pty, messageType, data); err != nil {
+			stopOutput()
 			<-done
 			return err
 		}
 	}
+}
+
+func handlePTYClientMessage(ctx context.Context, pty sandboxPTYSession, messageType int, data []byte) error {
+	if messageType == websocket.BinaryMessage {
+		return pty.Send(ctx, data)
+	}
+
+	var message sandboxPTYClientMessage
+	if err := json.Unmarshal(data, &message); err == nil && message.Type != "" {
+		switch message.Type {
+		case "input":
+			return pty.Send(ctx, []byte(message.Data))
+		case "resize":
+			if message.Cols == 0 || message.Rows == 0 {
+				return nil
+			}
+			return pty.Resize(ctx, sandboxPTYSize{Cols: message.Cols, Rows: message.Rows})
+		}
+	}
+
+	return pty.Send(ctx, data)
 }
