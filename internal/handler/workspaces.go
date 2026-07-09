@@ -49,6 +49,11 @@ type connectWorkspaceRequest struct {
 	Recreate bool `json:"recreate"`
 }
 
+type workspaceHeartbeatResponse struct {
+	OK             bool  `json:"ok"`
+	TimeoutSeconds int32 `json:"timeout_seconds"`
+}
+
 var (
 	workspaceNamePattern      = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	invalidWorkspaceNameChars = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
@@ -88,14 +93,15 @@ func (ctrl *Ctrl) CreateWorkspace(c *fox.Context) any {
 	if err := validateOpenRepositoryRequest(openRepositoryRequest(req)); err != nil {
 		return err
 	}
-	apiKey, err := ctrl.qiniuAPIKey(c, accountID)
+	credentials, err := ctrl.qiniuRuntimeCredentials(c, accountID)
 	if err != nil {
 		return err
 	}
+	runtimeEnvs := qiniuRuntimeEnvs(credentials)
 	workspaceID := uuid.NewString()
 	workspacePath := "/workspace/" + safeWorkspaceName(workspaceName(req.Name, ""))
 	metadata := workspaceSandboxMetadata(workspaceID, workspaceName(req.Name, ""), nil, "", req.Region, workspacePath)
-	sandboxInfo, err := ctrl.sandboxRuntime.Create(c.Request.Context(), apiKey, sandboxRuntimeCreateRequest{
+	sandboxInfo, err := ctrl.sandboxRuntime.Create(c.Request.Context(), credentials.SandboxAPIKey, sandboxRuntimeCreateRequest{
 		TemplateID:      req.TemplateID,
 		TimeoutSeconds:  ctrl.defaultSandboxTimeoutSeconds,
 		PollingInterval: defaultSandboxPollInterval,
@@ -105,12 +111,13 @@ func (ctrl *Ctrl) CreateWorkspace(c *fox.Context) any {
 	if err != nil {
 		return err
 	}
-	workspace, err := ctrl.sandboxRuntime.PrepareWorkspace(c.Request.Context(), apiKey, sandboxRuntimeWorkspaceRequest{
+	workspace, err := ctrl.sandboxRuntime.PrepareWorkspace(c.Request.Context(), credentials.SandboxAPIKey, sandboxRuntimeWorkspaceRequest{
 		SandboxID:      sandboxInfo.SandboxID,
 		TimeoutSeconds: ctrl.defaultSandboxTimeoutSeconds,
 		Endpoint:       req.Region,
 		WorkspacePath:  workspacePath,
 		IDEPassword:    ctrl.codeServerPassword(sandboxInfo.SandboxID),
+		Envs:           runtimeEnvs,
 	})
 	if err != nil {
 		return err
@@ -164,16 +171,17 @@ func (ctrl *Ctrl) ConnectWorkspace(c *fox.Context) any {
 			return httperrors.New(http.StatusBadRequest, "invalid request body")
 		}
 	}
-	apiKey, err := ctrl.qiniuAPIKey(c, accountID)
+	credentials, err := ctrl.qiniuRuntimeCredentials(c, accountID)
 	if err != nil {
 		return err
 	}
+	runtimeEnvs := qiniuRuntimeEnvs(credentials)
 	sandboxID := workspace.SandboxID
 	var templateID string
 	workspacePath := workspaceRuntimePath(workspace)
 	metadata := workspaceSandboxMetadata(workspace.ID, workspace.Name, workspace.GitHubRepoID, workspace.RepoFullName, workspace.Region, workspacePath)
 	if sandboxID == "" || req.Recreate {
-		info, err := ctrl.sandboxRuntime.Create(c.Request.Context(), apiKey, sandboxRuntimeCreateRequest{
+		info, err := ctrl.sandboxRuntime.Create(c.Request.Context(), credentials.SandboxAPIKey, sandboxRuntimeCreateRequest{
 			TemplateID:      workspace.TemplateID,
 			TimeoutSeconds:  ctrl.defaultSandboxTimeoutSeconds,
 			PollingInterval: defaultSandboxPollInterval,
@@ -186,7 +194,7 @@ func (ctrl *Ctrl) ConnectWorkspace(c *fox.Context) any {
 		sandboxID = info.SandboxID
 		templateID = info.TemplateID
 	} else {
-		info, err := ctrl.sandboxRuntime.Connect(c.Request.Context(), apiKey, sandboxID, ctrl.defaultSandboxTimeoutSeconds, workspace.Region)
+		info, err := ctrl.sandboxRuntime.Connect(c.Request.Context(), credentials.SandboxAPIKey, sandboxID, ctrl.defaultSandboxTimeoutSeconds, workspace.Region)
 		if err != nil {
 			if isSandboxNotFoundError(err) {
 				return httperrors.New(http.StatusConflict, "workspace sandbox no longer exists")
@@ -195,7 +203,7 @@ func (ctrl *Ctrl) ConnectWorkspace(c *fox.Context) any {
 		}
 		templateID = info.TemplateID
 	}
-	runtimeWorkspace, err := ctrl.prepareConnectedWorkspace(c, accountID, apiKey, sandboxID, workspace, workspacePath)
+	runtimeWorkspace, err := ctrl.prepareConnectedWorkspace(c, accountID, credentials.SandboxAPIKey, runtimeEnvs, sandboxID, workspace, workspacePath)
 	if err != nil {
 		return err
 	}
@@ -234,10 +242,94 @@ func (ctrl *Ctrl) ConnectWorkspace(c *fox.Context) any {
 	return ctrl.workspaceResponse(c.Request, *workspaceRecord)
 }
 
+func (ctrl *Ctrl) WorkspaceHeartbeat(c *fox.Context) any {
+	accountID, err := ctrl.accountIDFromRequest(c)
+	if err != nil {
+		return httperrors.New(http.StatusUnauthorized, "unauthorized")
+	}
+	workspaceID := c.Param("workspaceID")
+	if workspaceID == "" {
+		return httperrors.New(http.StatusBadRequest, "workspace id is required")
+	}
+	workspace, err := ctrl.service.Workspace(c.Request.Context(), accountID, workspaceID)
+	if err != nil {
+		return httperrors.New(http.StatusNotFound, "workspace not found")
+	}
+	if workspace.SandboxID == "" {
+		return httperrors.New(http.StatusPreconditionRequired, "workspace sandbox is not connected")
+	}
+	credentials, err := ctrl.qiniuRuntimeCredentials(c, accountID)
+	if err != nil {
+		return err
+	}
+	if err := ctrl.sandboxRuntime.SetTimeout(
+		c.Request.Context(),
+		credentials.SandboxAPIKey,
+		workspace.SandboxID,
+		workspace.Region,
+		ctrl.defaultSandboxTimeoutSeconds,
+	); err != nil {
+		return err
+	}
+	return workspaceHeartbeatResponse{OK: true, TimeoutSeconds: ctrl.defaultSandboxTimeoutSeconds}
+}
+
+func (ctrl *Ctrl) PauseWorkspaceSandbox(c *fox.Context) any {
+	accountID, err := ctrl.accountIDFromRequest(c)
+	if err != nil {
+		return httperrors.New(http.StatusUnauthorized, "unauthorized")
+	}
+	workspaceID := c.Param("workspaceID")
+	if workspaceID == "" {
+		return httperrors.New(http.StatusBadRequest, "workspace id is required")
+	}
+	workspace, err := ctrl.service.Workspace(c.Request.Context(), accountID, workspaceID)
+	if err != nil {
+		return httperrors.New(http.StatusNotFound, "workspace not found")
+	}
+	if workspace.SandboxID == "" {
+		return httperrors.New(http.StatusPreconditionRequired, "workspace sandbox is not connected")
+	}
+	credentials, err := ctrl.qiniuRuntimeCredentials(c, accountID)
+	if err != nil {
+		return err
+	}
+	if err := ctrl.sandboxRuntime.Pause(c.Request.Context(), credentials.SandboxAPIKey, workspace.SandboxID, workspace.Region); err != nil {
+		return err
+	}
+	session, err := ctrl.service.SaveSandboxSession(c.Request.Context(), accountID, service.SandboxSessionInput{
+		SandboxID:     workspace.SandboxID,
+		TemplateID:    workspace.TemplateID,
+		State:         "paused",
+		Endpoint:      workspace.Endpoint,
+		GitHubRepoID:  workspace.GitHubRepoID,
+		RepoFullName:  workspace.RepoFullName,
+		WorkspacePath: workspace.WorkspacePath,
+		Region:        workspace.Region,
+		IDEURL:        workspace.IDEURL,
+	})
+	if err != nil {
+		return err
+	}
+	workspaceRecord, err := ctrl.service.UpdateWorkspaceRuntime(c.Request.Context(), accountID, workspace.ID, service.WorkspaceInput{
+		SandboxID:     workspace.SandboxID,
+		TemplateID:    workspace.TemplateID,
+		State:         session.State,
+		Endpoint:      workspace.Endpoint,
+		WorkspacePath: workspace.WorkspacePath,
+		IDEURL:        workspace.IDEURL,
+	})
+	if err != nil {
+		return err
+	}
+	return ctrl.workspaceResponse(c.Request, *workspaceRecord)
+}
+
 func (ctrl *Ctrl) prepareConnectedWorkspace(
 	c *fox.Context,
 	accountID string,
 	apiKey string,
+	runtimeEnvs map[string]string,
 	sandboxID string,
 	workspace *entity.Workspace,
 	workspacePath string,
@@ -249,6 +341,7 @@ func (ctrl *Ctrl) prepareConnectedWorkspace(
 			Endpoint:       workspace.Region,
 			WorkspacePath:  workspacePath,
 			IDEPassword:    ctrl.codeServerPassword(sandboxID),
+			Envs:           runtimeEnvs,
 		})
 	}
 	repo, err := ctrl.service.GitHubRepositoryByGitHubRepoID(c.Request.Context(), accountID, *workspace.GitHubRepoID)
@@ -268,6 +361,7 @@ func (ctrl *Ctrl) prepareConnectedWorkspace(
 		Token:          token,
 		WorkspacePath:  workspacePath,
 		IDEPassword:    ctrl.codeServerPassword(sandboxID),
+		Envs:           runtimeEnvs,
 	})
 	if err != nil {
 		return nil, httperrors.New(http.StatusInternalServerError, "failed to prepare repository: "+redactSecret(err.Error(), token))
@@ -277,7 +371,13 @@ func (ctrl *Ctrl) prepareConnectedWorkspace(
 
 func isSandboxNotFoundError(err error) bool {
 	var apiErr *qiniusb.APIError
-	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.StatusCode == http.StatusNotFound {
+		return true
+	}
+	return apiErr.StatusCode == http.StatusBadGateway && strings.Contains(strings.ToLower(apiErr.Message), "sandbox was not found")
 }
 
 func (ctrl *Ctrl) backfillWorkspacesFromSandboxSessions(c *fox.Context, accountID string) error {
@@ -347,17 +447,18 @@ func (ctrl *Ctrl) OpenRepository(c *fox.Context) any {
 	if err := validateOpenRepositoryRequest(req); err != nil {
 		return err
 	}
-	apiKey, err := ctrl.qiniuAPIKey(c, accountID)
+	credentials, err := ctrl.qiniuRuntimeCredentials(c, accountID)
 	if err != nil {
 		return err
 	}
+	runtimeEnvs := qiniuRuntimeEnvs(credentials)
 	workspaceID := uuid.NewString()
 	if existing, err := ctrl.service.WorkspaceByGitHubRepoID(c.Request.Context(), accountID, repo.GitHubRepoID); err == nil {
 		workspaceID = existing.ID
 	}
 	workspacePath := "/workspace/" + safeWorkspaceName(repo.FullName)
 	metadata := workspaceSandboxMetadata(workspaceID, workspaceName(req.Name, repo.FullName), &repo.GitHubRepoID, repo.FullName, req.Region, workspacePath)
-	sandboxInfo, err := ctrl.sandboxRuntime.Create(c.Request.Context(), apiKey, sandboxRuntimeCreateRequest{
+	sandboxInfo, err := ctrl.sandboxRuntime.Create(c.Request.Context(), credentials.SandboxAPIKey, sandboxRuntimeCreateRequest{
 		TemplateID:      req.TemplateID,
 		TimeoutSeconds:  ctrl.defaultSandboxTimeoutSeconds,
 		PollingInterval: defaultSandboxPollInterval,
@@ -371,7 +472,7 @@ func (ctrl *Ctrl) OpenRepository(c *fox.Context) any {
 	if err != nil {
 		return err
 	}
-	workspace, err := ctrl.sandboxRuntime.PrepareRepository(c.Request.Context(), apiKey, sandboxRuntimeRepositoryRequest{
+	workspace, err := ctrl.sandboxRuntime.PrepareRepository(c.Request.Context(), credentials.SandboxAPIKey, sandboxRuntimeRepositoryRequest{
 		SandboxID:      sandboxInfo.SandboxID,
 		TimeoutSeconds: ctrl.defaultSandboxTimeoutSeconds,
 		Endpoint:       req.Region,
@@ -380,6 +481,7 @@ func (ctrl *Ctrl) OpenRepository(c *fox.Context) any {
 		Token:          token,
 		WorkspacePath:  workspacePath,
 		IDEPassword:    ctrl.codeServerPassword(sandboxInfo.SandboxID),
+		Envs:           runtimeEnvs,
 	})
 	if err != nil {
 		return httperrors.New(http.StatusInternalServerError, "failed to prepare repository: "+redactSecret(err.Error(), token))
@@ -439,6 +541,19 @@ func redactSecret(message, secret string) string {
 	message = strings.ReplaceAll(message, secret, "REDACTED")
 	message = strings.ReplaceAll(message, url.QueryEscape(secret), "REDACTED")
 	return message
+}
+
+func qiniuRuntimeEnvs(credentials qiniuRuntimeCredentialSet) map[string]string {
+	if credentials.MAASAPIKey == "" {
+		return nil
+	}
+	return map[string]string{
+		"ANTHROPIC_AUTH_TOKEN": credentials.MAASAPIKey,
+		"ANTHROPIC_BASE_URL":   "https://api.qnaigc.com",
+		"OPENAI_API_KEY":       credentials.MAASAPIKey,
+		"OPENAI_BASE_URL":      "https://api.qnaigc.com/v1",
+		"QINIU_MAAS_API_KEY":   credentials.MAASAPIKey,
+	}
 }
 
 func validateWorkspaceName(name string) error {

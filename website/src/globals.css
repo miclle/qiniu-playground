@@ -81,4 +81,9 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  body.workspace-assistant-resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
 }

@@ -1,38 +1,56 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import type { AxiosError } from 'axios'
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { CSSProperties, KeyboardEvent, PointerEvent, ReactNode } from 'react'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { AxisPointerComponent, GridComponent, TooltipComponent } from 'echarts/components'
 import { SVGRenderer } from 'echarts/renderers'
 import type { ECharts, EChartsCoreOption } from 'echarts/core'
+import ReactMarkdown from 'react-markdown'
 import {
   Activity,
   AlertTriangle,
   ArrowLeft,
+  ArrowUp,
   Bot,
-  CheckCircle2,
   Cpu,
   ExternalLink,
   FolderTree,
   Gauge,
   GitBranch,
   HardDrive,
+  LoaderCircle,
   PanelsTopLeft,
   Plus,
   Rocket,
   Settings,
+  Sparkles,
   SquareTerminal,
   X,
 } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 
-import { connectWorkspace, workspaces as fetchWorkspaces } from 'src/api/workspaces'
+import { qiniuCredentialStatus } from 'src/api/qiniu'
+import { sendWorkspaceChatMessage, workspaceChatMessages } from 'src/api/workspace-chat'
+import type { WorkspaceChatMessage } from 'src/api/workspace-chat'
+import {
+  connectWorkspace,
+  heartbeatWorkspace,
+  pauseWorkspaceSandbox,
+  workspaces as fetchWorkspaces,
+} from 'src/api/workspaces'
 import type { Workspace } from 'src/api/workspaces'
 import { sandboxMetrics } from 'src/api/sandboxes'
 import type { SandboxMetric } from 'src/api/sandboxes'
 import { Button, buttonVariants } from 'src/components/ui/button'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupText,
+  InputGroupTextarea,
+} from 'src/components/ui/input-group'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from 'src/components/ui/tabs'
 import { WorkspaceFileBrowser } from 'src/components/WorkspaceFileBrowser'
 import {
@@ -59,6 +77,11 @@ echarts.use([AxisPointerComponent, GridComponent, LineChart, SVGRenderer, Toolti
 
 const TerminalPanel = lazy(() => import('src/components/TerminalPanel'))
 const metricsChartGroup = 'workspace-monitor-metrics'
+const defaultAssistantSidebarWidth = '50%'
+const minAssistantSidebarWidth = 300
+const minWorkbenchColumnWidth = 300
+const assistantResizeHandleWidth = 4
+const workspaceHeartbeatIntervalMs = 30_000
 
 type WorkbenchTab = string
 
@@ -70,6 +93,18 @@ interface TerminalSession {
 
 function initialTerminalSessions(): TerminalSession[] {
   return [{ id: 'terminal-1', label: 'Terminal', opened: false }]
+}
+
+function clampAssistantSidebarWidth(width: number, containerWidth?: number) {
+  const minWidth = Math.max(minAssistantSidebarWidth, width)
+  if (!containerWidth || containerWidth <= minAssistantSidebarWidth + assistantResizeHandleWidth + minWorkbenchColumnWidth) {
+    return minWidth
+  }
+  return Math.min(minWidth, containerWidth - assistantResizeHandleWidth - minWorkbenchColumnWidth)
+}
+
+function defaultAssistantSidebarWidthValue(containerWidth?: number) {
+  return containerWidth ? clampAssistantSidebarWidth(containerWidth / 2, containerWidth) : minAssistantSidebarWidth
 }
 
 function githubRepositoryURL(fullName?: string) {
@@ -97,6 +132,27 @@ function DetailRow({ label, value }: { label: string; value?: string | number | 
     <div className="grid grid-cols-[96px_1fr] gap-3 border-b px-4 py-3 text-sm last:border-b-0">
       <span className="text-muted-foreground">{label}</span>
       <span className="min-w-0 truncate font-medium">{value || '-'}</span>
+    </div>
+  )
+}
+
+function SandboxCreationOverlay({ repository }: { repository?: string }) {
+  return (
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 p-6 backdrop-blur-sm"
+      role="status"
+      aria-live="polite"
+      aria-label="Creating sandbox"
+    >
+      <div className="flex w-full max-w-sm flex-col items-center rounded-md border bg-background px-5 py-6 text-center shadow-lg">
+        <LoaderCircle className="h-8 w-8 animate-spin text-primary" />
+        <h2 className="mt-4 text-base font-semibold">Creating sandbox</h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          {repository
+            ? `Mounting ${repository} and preparing the runtime.`
+            : 'Preparing the runtime and workspace files.'}
+        </p>
+      </div>
     </div>
   )
 }
@@ -151,6 +207,49 @@ function formatMetricClock(metric?: SandboxMetric) {
   }
   const time = metricTime(metric)
   return time ? new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'
+}
+
+function chatErrorMessage(error: unknown) {
+  return connectionErrorMessage(error) || 'Unable to send this message.'
+}
+
+function ChatMarkdown({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      components={{
+        a: ({ children, href }) => (
+          <a className="font-medium underline underline-offset-3" href={href} target="_blank" rel="noreferrer">
+            {children}
+          </a>
+        ),
+        code: ({ children, className, ...props }) => {
+          const codeProps = { ...props } as typeof props & { node?: unknown }
+          delete codeProps.node
+          const isInline = typeof children === 'string' && !children.includes('\n')
+          return (
+            <code
+              className={cn('font-mono text-[0.92em]', isInline && 'rounded bg-secondary px-1 py-0.5', className)}
+              {...codeProps}
+            >
+              {children}
+            </code>
+          )
+        },
+        li: ({ children }) => <li className="pl-1">{children}</li>,
+        ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
+        p: ({ children }) => <p className="my-1 first:mt-0 last:mb-0">{children}</p>,
+        pre: ({ children }) => (
+          <pre className="my-2 overflow-auto rounded-md bg-secondary p-3 text-xs leading-5">
+            {children}
+          </pre>
+        ),
+        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+        ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  )
 }
 
 function metricLevel(value: number) {
@@ -528,7 +627,18 @@ function WorkspaceDetail() {
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('files')
   const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>(initialTerminalSessions)
   const [nextTerminalNumber, setNextTerminalNumber] = useState(2)
+  const [assistantSidebarWidth, setAssistantSidebarWidth] = useState<number | null>(null)
+  const [assistantSidebarResizing, setAssistantSidebarResizing] = useState(false)
+  const [workspaceLayoutWidth, setWorkspaceLayoutWidth] = useState(0)
+  const [chatMessage, setChatMessage] = useState('')
   const previousWorkspaceIDRef = useRef<string | undefined>(undefined)
+  const workspaceLayoutRef = useRef<HTMLDivElement | null>(null)
+  const chatContainerRef = useRef<HTMLDivElement | null>(null)
+  const workspaceActivityRef = useRef({
+    pauseRequested: false,
+    sandboxID: '',
+    workspaceID: '',
+  })
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
     queryFn: fetchWorkspaces,
@@ -578,6 +688,46 @@ function WorkspaceDetail() {
     refetchInterval: workbenchTab === 'monitor' ? 15_000 : false,
     retry: false,
   })
+  const qiniuCredentialsQuery = useQuery({
+    queryKey: ['qiniu', 'credentials'],
+    queryFn: qiniuCredentialStatus,
+    retry: false,
+  })
+  const chatMessagesQuery = useQuery({
+    queryKey: ['workspace-chat', workspaceId],
+    queryFn: () => workspaceChatMessages(workspaceId || ''),
+    enabled: Boolean(workspaceId),
+    retry: false,
+  })
+  const chatMutation = useMutation({
+    mutationFn: (message: string) => {
+      if (!workspaceId) {
+        throw new Error('workspace id is required')
+      }
+      return sendWorkspaceChatMessage(workspaceId, message)
+    },
+    onSuccess: (response) => {
+      setChatMessage('')
+      queryClient.setQueryData<{ data: { messages: WorkspaceChatMessage[] } }>(['workspace-chat', workspaceId], (current) => {
+        const responseMessages = [response.data.user_message, response.data.assistant_message]
+        if (!current) {
+          return { data: { messages: responseMessages } }
+        }
+        const existingIDs = new Set(current.data.messages.map((message: WorkspaceChatMessage) => message.id))
+        return {
+          ...current,
+          data: {
+            ...current.data,
+            messages: [
+              ...current.data.messages,
+              ...responseMessages.filter((message) => !existingIDs.has(message.id)),
+            ],
+          },
+        }
+      })
+      void queryClient.invalidateQueries({ queryKey: ['qiniu', 'credentials'] })
+    },
+  })
 
   useEffect(() => {
     if (previousWorkspaceIDRef.current === workspaceId) {
@@ -589,6 +739,7 @@ function WorkspaceDetail() {
     setWorkbenchTab('files')
     setTerminalSessions(initialTerminalSessions())
     setNextTerminalNumber(2)
+    setChatMessage('')
   }, [connectWorkspaceMutation.reset, workspaceId])
 
   const handleWorkbenchTabChange = (value: any) => {
@@ -626,6 +777,76 @@ function WorkspaceDetail() {
     }
   }
 
+  const updateAssistantSidebarWidth = (nextWidth: number, containerWidth?: number) => {
+    setAssistantSidebarWidth(clampAssistantSidebarWidth(
+      nextWidth,
+      containerWidth ?? workspaceLayoutRef.current?.getBoundingClientRect().width,
+    ))
+  }
+
+  const nudgeAssistantSidebarWidth = (offset: number) => {
+    const containerWidth = workspaceLayoutRef.current?.getBoundingClientRect().width
+    setAssistantSidebarWidth((currentWidth) => clampAssistantSidebarWidth(
+      (currentWidth ?? defaultAssistantSidebarWidthValue(containerWidth)) + offset,
+      containerWidth,
+    ))
+  }
+
+  const handleAssistantResizePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return
+    }
+    event.preventDefault()
+    const startX = event.clientX
+    const containerWidth = workspaceLayoutRef.current?.getBoundingClientRect().width
+    const startWidth = assistantSidebarWidth ?? defaultAssistantSidebarWidthValue(containerWidth)
+
+    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+      updateAssistantSidebarWidth(startWidth + moveEvent.clientX - startX, containerWidth)
+    }
+    const handlePointerUp = () => {
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', handlePointerUp)
+      setAssistantSidebarResizing(false)
+    }
+
+    setAssistantSidebarResizing(true)
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', handlePointerUp)
+  }
+
+  const handleAssistantResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault()
+      nudgeAssistantSidebarWidth(-24)
+    }
+    if (event.key === 'ArrowRight') {
+      event.preventDefault()
+      nudgeAssistantSidebarWidth(24)
+    }
+    if (event.key === 'Home') {
+      event.preventDefault()
+      updateAssistantSidebarWidth(minAssistantSidebarWidth)
+    }
+  }
+
+  useEffect(() => {
+    const layout = workspaceLayoutRef.current
+    if (!layout) {
+      return
+    }
+    const updateLayoutWidth = () => {
+      setWorkspaceLayoutWidth(layout.getBoundingClientRect().width)
+    }
+    updateLayoutWidth()
+    if (typeof ResizeObserver === 'undefined') {
+      return
+    }
+    const resizeObserver = new ResizeObserver(updateLayoutWidth)
+    resizeObserver.observe(layout)
+    return () => resizeObserver.disconnect()
+  }, [])
+
   useEffect(() => {
     if (
       !workspace?.id ||
@@ -643,6 +864,94 @@ function WorkspaceDetail() {
     connectedWorkspace?.id,
     workspace?.id,
   ])
+
+  useEffect(() => {
+    const activeWorkspaceID = workspace?.id
+    const activeSandboxID = connectedWorkspace?.sandbox_id ?? workspace?.sandbox_id
+    if (!activeWorkspaceID || !activeSandboxID || connectWorkspaceMutation.isPending) {
+      return undefined
+    }
+
+    let cancelled = false
+    workspaceActivityRef.current = {
+      pauseRequested: false,
+      sandboxID: activeSandboxID,
+      workspaceID: activeWorkspaceID,
+    }
+
+    const heartbeat = () => {
+      if (cancelled || workspaceActivityRef.current.pauseRequested) {
+        return
+      }
+      void heartbeatWorkspace(activeWorkspaceID).catch(() => {})
+    }
+
+    const pause = (keepalive = false) => {
+      if (cancelled || workspaceActivityRef.current.pauseRequested) {
+        return
+      }
+      workspaceActivityRef.current.pauseRequested = true
+      void pauseWorkspaceSandbox(activeWorkspaceID, keepalive ? { keepalive: true } : undefined).catch(() => {
+        workspaceActivityRef.current.pauseRequested = false
+      })
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+      workspaceActivityRef.current.pauseRequested = false
+      heartbeat()
+    }
+
+    const handlePageHide = () => pause(true)
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('pagehide', handlePageHide)
+
+    heartbeat()
+    const heartbeatTimer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') {
+        return
+      }
+      heartbeat()
+    }, workspaceHeartbeatIntervalMs)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(heartbeatTimer)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('pagehide', handlePageHide)
+    }
+  }, [
+    connectWorkspaceMutation.isPending,
+    connectedWorkspace?.sandbox_id,
+    workspace?.id,
+    workspace?.sandbox_id,
+  ])
+
+  useEffect(() => () => {
+    const { pauseRequested, sandboxID, workspaceID } = workspaceActivityRef.current
+    if (!workspaceID || !sandboxID || pauseRequested) {
+      return
+    }
+    workspaceActivityRef.current.pauseRequested = true
+    void pauseWorkspaceSandbox(workspaceID).catch(() => {})
+  }, [workspaceId])
+
+  useEffect(() => {
+    document.body.classList.toggle('workspace-assistant-resizing', assistantSidebarResizing)
+    return () => {
+      document.body.classList.remove('workspace-assistant-resizing')
+    }
+  }, [assistantSidebarResizing])
+
+  useEffect(() => {
+    if (!chatContainerRef.current) {
+      return
+    }
+    chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
+  }, [chatMessagesQuery.data?.data.messages, chatMutation.isPending])
 
   if (workspacesQuery.isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading workspace...</div>
@@ -690,15 +999,40 @@ function WorkspaceDetail() {
   const repoURL = githubRepositoryURL(currentWorkspace.repo_full_name)
   const metadataJSON = JSON.stringify(metadata(currentWorkspace), null, 2)
   const reconnecting = connectWorkspaceMutation.isPending
+  const creatingSandbox = reconnecting && (connectWorkspaceMutation.variables?.recreate || !currentWorkspace?.sandbox_id)
   const connectError = reconnecting ? null : connectWorkspaceMutation.error
   const sandboxMissing = !connectWorkspaceMutation.data && isMissingSandboxError(connectError)
   const connectFailed = Boolean(connectError && !sandboxMissing)
-  const canOpenIDE = Boolean(currentWorkspace.ide_url && !sandboxMissing && !connectFailed && !reconnecting)
-  const missingSandboxLabel = workspace.sandbox_id || '-'
-  const missingSandboxOpen = sandboxMissing && dismissedMissingWorkspaceID !== workspace.id
+  const canOpenIDE = Boolean(currentWorkspace?.ide_url && !sandboxMissing && !connectFailed && !reconnecting)
+  const missingSandboxLabel = currentWorkspace?.sandbox_id || '-'
+  const missingSandboxOpen = sandboxMissing && dismissedMissingWorkspaceID !== workspace?.id
+  const maasMissing = qiniuCredentialsQuery.data?.data.maas_configured === false
+  const chatMessages = chatMessagesQuery.data?.data.messages ?? []
+  const chatPending = chatMutation.isPending
+  const chatDisabled = chatPending || maasMissing || !currentWorkspace?.sandbox_id || reconnecting || sandboxMissing || connectFailed || currentWorkspace?.state !== 'running'
+  const chatError = chatMutation.isError ? chatErrorMessage(chatMutation.error) : ''
+  const submitChatMessage = () => {
+    const message = chatMessage.trim()
+    if (!message || chatDisabled) {
+      return
+    }
+    chatMutation.mutate(message)
+  }
+  const handleChatMessageKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+      return
+    }
+    event.preventDefault()
+    submitChatMessage()
+  }
+  const assistantSidebarAriaValue = assistantSidebarWidth ?? defaultAssistantSidebarWidthValue(workspaceLayoutWidth)
+  const workspaceLayoutStyle = {
+    '--assistant-sidebar-width': assistantSidebarWidth === null ? defaultAssistantSidebarWidth : `${assistantSidebarWidth}px`,
+  } as CSSProperties
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background">
+    <div className="relative flex h-screen flex-col overflow-hidden bg-background">
+      {creatingSandbox ? <SandboxCreationOverlay repository={currentWorkspace?.repo_full_name} /> : null}
       <Dialog
         open={missingSandboxOpen}
         onOpenChange={(open) => {
@@ -845,39 +1179,129 @@ function WorkspaceDetail() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[320px_minmax(480px,1fr)]">
-        <section className="flex min-h-0 flex-col border-b xl:border-r xl:border-b-0">
+      <div
+        ref={workspaceLayoutRef}
+        className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[var(--assistant-sidebar-width)_4px_minmax(300px,1fr)]"
+        style={workspaceLayoutStyle}
+      >
+        <section className="flex min-h-0 flex-col border-b xl:border-b-0">
           <div className="flex h-10 items-center justify-between border-b px-4">
             <div className="flex items-center gap-2">
               <Bot className="h-4 w-4 text-primary" />
-              <h2 className="text-sm font-semibold">Assistant</h2>
+              <h2 className="text-sm font-semibold">AI Chat</h2>
             </div>
-            <span className="text-xs text-muted-foreground">Workspace context</span>
+            <span className="text-xs text-muted-foreground">Ready</span>
           </div>
-          <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
-            <div className="rounded-md border bg-secondary/40 p-4">
-              <p className="text-sm font-medium">Ready to work in {title}</p>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                This view keeps the repository, sandbox, and launch targets in one place so the next action is obvious.
-              </p>
-            </div>
-            <div className="space-y-3">
-              {[
-                ['Sandbox prepared', currentWorkspace.sandbox_id || 'Waiting for sandbox id'],
-                ['Template selected', currentWorkspace.template_id],
-                ['Workspace mounted', currentWorkspace.workspace_path || 'Path unavailable'],
-              ].map(([label, value]) => (
-                <div key={label} className="flex gap-3 rounded-md border p-3">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">{label}</p>
-                    <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{value}</p>
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div ref={chatContainerRef} className="min-h-0 flex-1 space-y-4 overflow-auto p-4" aria-live="polite">
+              {chatMessages.length === 0 ? (
+                <div className="flex gap-3">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                    <Sparkles className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">Ready to work in {title}</p>
+                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                      Ask about files, run commands, or prepare a launch target for this workspace.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+              {chatMessages.map((message) => (
+                <div
+                  key={message.id}
+                  className={cn(
+                    'rounded-md px-3 py-2 text-sm',
+                    message.role === 'user' ? 'ml-8 bg-secondary/50' : 'mr-6 bg-transparent px-0',
+                  )}
+                >
+                  <div className="break-words leading-6">
+                    <ChatMarkdown content={message.content} />
                   </div>
                 </div>
               ))}
+              {chatPending ? (
+                <div className="mr-5 flex items-center gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                  Running AI Chat in the sandbox...
+                </div>
+              ) : null}
+              {maasMissing ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                  <div className="flex gap-2">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                    <div className="min-w-0">
+                      <p className="font-medium">Qiniu MAAS API Key is not configured.</p>
+                      <p className="mt-1 leading-6 text-amber-800">
+                        Configure it before using AI Chat for this workspace.
+                      </p>
+                      <Link
+                        className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'mt-3 bg-background no-underline')}
+                        to="/credentials"
+                      >
+                        Configure credentials
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {chatError ? (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                  {chatError}
+                </div>
+              ) : null}
             </div>
+            <form
+              className="shrink-0 bg-background p-3"
+              onSubmit={(event) => {
+                event.preventDefault()
+                submitChatMessage()
+              }}
+            >
+              <InputGroup className="min-h-24 items-stretch rounded-2xl bg-secondary/40 shadow-sm has-[[data-slot=input-group-control]:focus-visible]:ring-2">
+                <InputGroupTextarea
+                  aria-label="Message AI Chat"
+                  placeholder="Ask AI Chat to inspect, run, or explain..."
+                  className="min-h-14 px-3 text-sm"
+                  value={chatMessage}
+                  onChange={(event) => setChatMessage(event.target.value)}
+                  onKeyDown={handleChatMessageKeyDown}
+                  disabled={chatDisabled}
+                />
+                <InputGroupAddon align="block-end" className="justify-between">
+                  <InputGroupText className="text-xs">
+                    {currentWorkspace?.sandbox_id ? 'Workspace context attached' : 'Connect a sandbox first'}
+                  </InputGroupText>
+                  <div className="flex items-center gap-1">
+                    <InputGroupButton
+                      type="submit"
+                      size="icon-xs"
+                      aria-label="Send message"
+                      disabled={chatDisabled || !chatMessage.trim()}
+                      className="rounded-full bg-primary text-primary-foreground hover:bg-primary/80"
+                    >
+                      {chatPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
+                    </InputGroupButton>
+                  </div>
+                </InputGroupAddon>
+              </InputGroup>
+            </form>
           </div>
         </section>
+
+        <div
+          role="separator"
+          aria-label="Resize AI Chat sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={minAssistantSidebarWidth}
+          aria-valuenow={Math.round(assistantSidebarAriaValue)}
+          tabIndex={0}
+          className="group hidden cursor-col-resize bg-transparent focus-visible:outline-none xl:block"
+          onPointerDown={handleAssistantResizePointerDown}
+          onKeyDown={handleAssistantResizeKeyDown}
+        >
+          <div className="mx-auto h-full w-px bg-border transition-[width,background-color] group-hover:w-1 group-hover:bg-primary/60 group-focus-visible:w-1 group-focus-visible:bg-primary/60" />
+        </div>
 
         <section className="flex min-h-0 flex-col">
           <Tabs value={workbenchTab} onValueChange={handleWorkbenchTabChange} className="min-h-0 flex-1">
@@ -966,8 +1390,9 @@ function WorkspaceDetail() {
                 </div>
               ) : (
                 <WorkspaceFileBrowser
-                  sandboxID={currentWorkspace.sandbox_id}
-                  workspacePath={currentWorkspace.workspace_path}
+                  workspaceID={currentWorkspace?.id}
+                  sandboxID={currentWorkspace?.sandbox_id}
+                  workspacePath={currentWorkspace?.workspace_path}
                   disabled={reconnecting}
                   emptyMessage={reconnecting ? 'Checking sandbox...' : 'Preparing workspace files...'}
                 />
@@ -1002,7 +1427,7 @@ function WorkspaceDetail() {
                   <div className="flex h-full items-center justify-center rounded-md border border-dashed bg-background p-6 text-center text-sm text-muted-foreground">
                     Reconnect the workspace before opening a command line.
                   </div>
-                ) : currentWorkspace.sandbox_id && session.opened ? (
+                ) : currentWorkspace?.sandbox_id && session.opened ? (
                   <Suspense
                     fallback={
                       <div className="flex h-full items-center justify-center bg-[#0b0f14] p-6 text-sm text-slate-300">
@@ -1011,8 +1436,8 @@ function WorkspaceDetail() {
                     }
                   >
                     <TerminalPanel
-                      sandboxID={currentWorkspace.sandbox_id}
-                      workspacePath={currentWorkspace.workspace_path}
+                      sandboxID={currentWorkspace?.sandbox_id}
+                      workspacePath={currentWorkspace?.workspace_path}
                       disabled={reconnecting}
                       active={workbenchTab === session.id}
                     />

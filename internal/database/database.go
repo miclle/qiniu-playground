@@ -62,6 +62,7 @@ func Migrate(ctx context.Context, db *gorm.DB) error {
 		&entity.GitHubInstallation{},
 		&entity.GitHubRepository{},
 		&entity.Workspace{},
+		&entity.WorkspaceChatMessage{},
 		&entity.QiniuCredential{},
 		&entity.SandboxSession{},
 	); err != nil {

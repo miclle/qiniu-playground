@@ -5,6 +5,7 @@ import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import type { ConnectWorkspaceOptions, Workspace } from 'src/api/workspaces'
+import type { WorkspaceChatMessage } from 'src/api/workspace-chat'
 import type { SandboxFileEntry } from 'src/api/filesystem'
 import type { SandboxMetric } from 'src/api/sandboxes'
 import { queryClient } from 'src/lib/query-client'
@@ -28,6 +29,27 @@ const connectWorkspace = vi.fn<(
   sandbox_id: 'sbox_456',
   template_id: 'tmpl_react',
   state: 'running',
+  endpoint: 'sandbox.example.com',
+  workspace_path: '/workspace/qiniu__vision-tube',
+  ide_url: '/api/v1/sandboxes/sbox_456/ide/',
+}))
+
+const heartbeatWorkspace = vi.fn<(workspaceID: string) => Promise<{ data: { ok: boolean, timeout_seconds: number } }>>(() => apiResponse({
+  ok: true,
+  timeout_seconds: 86400,
+}))
+
+const pauseWorkspaceSandbox = vi.fn<(
+  workspaceID: string,
+  options?: { keepalive?: boolean },
+) => Promise<{ data: Workspace } | Response>>(() => apiResponse({
+  id: 'wks_123',
+  name: 'VisionTube',
+  repo_full_name: 'qiniu/vision-tube',
+  region: 'us-south-1',
+  sandbox_id: 'sbox_456',
+  template_id: 'tmpl_react',
+  state: 'paused',
   endpoint: 'sandbox.example.com',
   workspace_path: '/workspace/qiniu__vision-tube',
   ide_url: '/api/v1/sandboxes/sbox_456/ide/',
@@ -105,14 +127,72 @@ const fetchSandboxMetrics = vi.fn((
   options,
 }))
 
+const fetchQiniuCredentialStatus = vi.fn(() => apiResponse({
+  configured: true,
+  key_hint: '...box',
+  maas_configured: true,
+  access_key_configured: true,
+  secret_key_configured: true,
+}))
+
+const fetchWorkspaceChatMessages = vi.fn<(
+  workspaceID: string,
+) => Promise<{ data: { messages: WorkspaceChatMessage[] } }>>(() => apiResponse({
+  messages: [
+    {
+      id: 'msg_1',
+      created_at: '2026-07-07T10:00:00Z',
+      role: 'assistant',
+      content: 'I can inspect this workspace from the sandbox.',
+      provider: 'codex',
+    },
+  ] satisfies WorkspaceChatMessage[],
+}))
+
+const sendWorkspaceChatMessage = vi.fn((
+  workspaceID: string,
+  message: string,
+) => apiResponse({
+  user_message: {
+    id: 'msg_2',
+    created_at: '2026-07-07T10:01:00Z',
+    role: 'user',
+    content: message,
+  } satisfies WorkspaceChatMessage,
+  assistant_message: {
+    id: 'msg_3',
+    created_at: '2026-07-07T10:01:01Z',
+    role: 'assistant',
+    content: `Sandbox answer for ${workspaceID}`,
+    provider: 'codex',
+  } satisfies WorkspaceChatMessage,
+}))
+
 vi.mock('src/api/workspaces', () => ({
   workspaces: () => fetchWorkspaces(),
   connectWorkspace: (workspaceID: string, options?: { recreate?: boolean }) => connectWorkspace(workspaceID, options),
+  heartbeatWorkspace: (workspaceID: string) => heartbeatWorkspace(workspaceID),
+  pauseWorkspaceSandbox: (workspaceID: string, options?: { keepalive?: boolean }) => pauseWorkspaceSandbox(workspaceID, options),
+}))
+
+vi.mock('src/api/qiniu', () => ({
+  qiniuCredentialStatus: () => fetchQiniuCredentialStatus(),
+}))
+
+vi.mock('src/api/workspace-chat', () => ({
+  workspaceChatMessages: (workspaceID: string) => fetchWorkspaceChatMessages(workspaceID),
+  sendWorkspaceChatMessage: (workspaceID: string, message: string) => sendWorkspaceChatMessage(workspaceID, message),
 }))
 
 vi.mock('src/api/filesystem', () => ({
   sandboxFiles: (sandboxID: string, path: string) => fetchSandboxFiles(sandboxID, path),
   sandboxFileContent: (sandboxID: string, path: string) => fetchSandboxFileContent(sandboxID, path),
+  sandboxFilePreviewURL: (sandboxID: string, path: string) => (
+    `/api/v1/sandboxes/${encodeURIComponent(sandboxID)}/preview${path.split('/').map((segment) => encodeURIComponent(segment)).join('/')}`
+  ),
+  workspaceFilePreviewURL: (workspaceID: string, path: string) => (
+    `/api/v1/workspaces/${encodeURIComponent(workspaceID)}/preview${path.split('/').map((segment) => encodeURIComponent(segment)).join('/')}`
+  ),
 }))
 
 vi.mock('src/api/sandboxes', () => ({
@@ -187,9 +267,63 @@ beforeEach(() => {
     workspace_path: '/workspace/qiniu__vision-tube',
     ide_url: '/api/v1/sandboxes/sbox_456/ide/',
   }))
+  heartbeatWorkspace.mockReset()
+  heartbeatWorkspace.mockImplementation(() => apiResponse({
+    ok: true,
+    timeout_seconds: 86400,
+  }))
+  pauseWorkspaceSandbox.mockReset()
+  pauseWorkspaceSandbox.mockImplementation(() => apiResponse({
+    id: 'wks_123',
+    name: 'VisionTube',
+    repo_full_name: 'qiniu/vision-tube',
+    region: 'us-south-1',
+    sandbox_id: 'sbox_456',
+    template_id: 'tmpl_react',
+    state: 'paused',
+    endpoint: 'sandbox.example.com',
+    workspace_path: '/workspace/qiniu__vision-tube',
+    ide_url: '/api/v1/sandboxes/sbox_456/ide/',
+  }))
   fetchSandboxFiles.mockClear()
   fetchSandboxFileContent.mockClear()
   fetchSandboxMetrics.mockClear()
+  fetchQiniuCredentialStatus.mockReset()
+  fetchQiniuCredentialStatus.mockImplementation(() => apiResponse({
+    configured: true,
+    key_hint: '...box',
+    maas_configured: true,
+    access_key_configured: true,
+    secret_key_configured: true,
+  }))
+  fetchWorkspaceChatMessages.mockReset()
+  fetchWorkspaceChatMessages.mockImplementation(() => apiResponse({
+    messages: [
+      {
+        id: 'msg_1',
+        created_at: '2026-07-07T10:00:00Z',
+        role: 'assistant',
+        content: 'I can inspect this workspace from the sandbox.',
+        provider: 'codex',
+      },
+    ] satisfies WorkspaceChatMessage[],
+  }))
+  sendWorkspaceChatMessage.mockReset()
+  sendWorkspaceChatMessage.mockImplementation((workspaceID, message) => apiResponse({
+    user_message: {
+      id: 'msg_2',
+      created_at: '2026-07-07T10:01:00Z',
+      role: 'user',
+      content: message,
+    } satisfies WorkspaceChatMessage,
+    assistant_message: {
+      id: 'msg_3',
+      created_at: '2026-07-07T10:01:01Z',
+      role: 'assistant',
+      content: `Sandbox answer for ${workspaceID}`,
+      provider: 'codex',
+    } satisfies WorkspaceChatMessage,
+  }))
   window.URL.createObjectURL = vi.fn(() => 'blob:download')
   window.URL.revokeObjectURL = vi.fn()
   HTMLAnchorElement.prototype.click = vi.fn()
@@ -221,7 +355,13 @@ test('renders a workspace workbench with assistant, files, and terminal panels',
     expect(container.textContent).toContain('VisionTube')
   })
 
-  expect(container.textContent).toContain('Assistant')
+  expect(container.textContent).toContain('AI Chat')
+  expect(container.querySelector('textarea[aria-label="Message AI Chat"]')).toBeTruthy()
+  expect(container.textContent).toContain('Workspace context attached')
+  expect(container.querySelector('button[aria-label="Attach context"]')).toBeNull()
+  expect(container.textContent).toContain('I can inspect this workspace from the sandbox.')
+  expect(container.textContent).not.toContain('AI Chat · codex')
+  expect(container.textContent).not.toContain('You')
   expect(container.textContent).toContain('Files')
   expect(container.textContent).toContain('Monitor')
   expect(container.textContent).toContain('Terminal')
@@ -230,8 +370,13 @@ test('renders a workspace workbench with assistant, files, and terminal panels',
   expect(container.textContent).not.toContain('Files Tree')
   expect(container.textContent).not.toContain('Size')
   expect(container.textContent).not.toContain('42 B')
+  expect(container.querySelector('[role="separator"][aria-label="Resize AI Chat sidebar"]')).toBeTruthy()
   expect(container.querySelector('[role="separator"][aria-label="Resize file browser panes"]')).toBeTruthy()
+  expect(container.querySelector('[role="separator"][aria-label="Resize AI Chat sidebar"]')?.firstElementChild?.className).toBe(
+    container.querySelector('[role="separator"][aria-label="Resize file browser panes"]')?.firstElementChild?.className,
+  )
   expect(container.querySelector('[role="status"][aria-label="File browser status"]')).toBeTruthy()
+  expect(container.innerHTML.indexOf('Select a file to preview it here.')).toBeLessThan(container.innerHTML.indexOf('aria-label="Filesystem path"'))
   expect(container.textContent).toContain('/workspace/qiniu__vision-tube')
   expect(container.textContent).not.toContain('running')
   expect(connectWorkspace).toHaveBeenCalledWith('wks_123', undefined)
@@ -333,6 +478,397 @@ test('renders a workspace workbench with assistant, files, and terminal panels',
   })
   expect(container.textContent).toContain('Terminal for sbox_456 at /workspace/qiniu__vision-tube active true')
   expect(fetchSandboxFiles).toHaveBeenCalledTimes(fileFetchCountAfterTerminalOpen)
+})
+
+test('renders AI Chat messages as Markdown', async () => {
+  fetchWorkspaceChatMessages.mockImplementationOnce(() => apiResponse({
+    messages: [
+      {
+        id: 'msg_markdown',
+        created_at: '2026-07-07T10:00:00Z',
+        role: 'assistant',
+        content: 'Done. Created `/home/user/snake.html`.\n\n**How to play:**\n- Open it in a browser',
+        provider: 'claude',
+      },
+    ] satisfies WorkspaceChatMessage[],
+  }))
+
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Done. Created /home/user/snake.html.')
+  })
+
+  expect(container.textContent).not.toContain('`/home/user/snake.html`')
+  expect(container.textContent).not.toContain('**How to play:**')
+  expect(container.querySelector('code')?.textContent).toBe('/home/user/snake.html')
+  expect(container.querySelector('strong')?.textContent).toBe('How to play:')
+  expect(container.querySelector('li')?.textContent).toBe('Open it in a browser')
+})
+
+test('resizes workspace columns with a 300px minimum', async () => {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('VisionTube')
+  })
+
+  const assistantResizeHandle = container.querySelector('[role="separator"][aria-label="Resize AI Chat sidebar"]')
+  expect(assistantResizeHandle?.getAttribute('aria-valuemin')).toBe('300')
+  expect(assistantResizeHandle?.hasAttribute('aria-valuemax')).toBe(false)
+  expect(assistantResizeHandle?.getAttribute('aria-valuenow')).toBe('300')
+  expect(assistantResizeHandle?.parentElement?.style.getPropertyValue('--assistant-sidebar-width')).toBe('50%')
+  expect(assistantResizeHandle?.parentElement?.className).toContain('minmax(300px,1fr)')
+
+  await act(async () => {
+    assistantResizeHandle?.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    assistantResizeHandle?.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+  })
+
+  expect(assistantResizeHandle?.getAttribute('aria-valuenow')).toBe('300')
+
+  await act(async () => {
+    for (let index = 0; index < 10; index += 1) {
+      assistantResizeHandle?.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    }
+  })
+
+  expect(assistantResizeHandle?.getAttribute('aria-valuenow')).toBe('540')
+})
+
+test('keeps active workspace sandboxes alive and pauses them when the page closes', async () => {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(heartbeatWorkspace).toHaveBeenCalledWith('wks_123')
+  })
+
+  await act(async () => {
+    window.dispatchEvent(new Event('pagehide'))
+  })
+
+  expect(pauseWorkspaceSandbox).toHaveBeenCalledWith('wks_123', { keepalive: true })
+})
+
+test('keeps workspace sandboxes running across browser tab visibility changes', async () => {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(heartbeatWorkspace).toHaveBeenCalledWith('wks_123')
+  })
+  pauseWorkspaceSandbox.mockClear()
+  heartbeatWorkspace.mockClear()
+
+  const visibilitySpy = vi.spyOn(document, 'visibilityState', 'get')
+
+  await act(async () => {
+    visibilitySpy.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+
+  expect(pauseWorkspaceSandbox).not.toHaveBeenCalled()
+
+  await act(async () => {
+    visibilitySpy.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+
+  expect(heartbeatWorkspace).toHaveBeenCalledWith('wks_123')
+  visibilitySpy.mockRestore()
+  root.unmount()
+})
+
+test('pauses active workspace sandboxes when leaving the detail route', async () => {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(heartbeatWorkspace).toHaveBeenCalledWith('wks_123')
+  })
+  pauseWorkspaceSandbox.mockClear()
+
+  await act(async () => {
+    root.unmount()
+  })
+
+  expect(pauseWorkspaceSandbox).toHaveBeenCalledWith('wks_123', undefined)
+})
+
+test('sends AI Chat messages through the workspace chat API', async () => {
+  fetchWorkspaceChatMessages.mockImplementation(() => apiResponse({ messages: [] }))
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Ready to work in VisionTube')
+  })
+
+  const textarea = container.querySelector('textarea[aria-label="Message AI Chat"]') as HTMLTextAreaElement | null
+  expect(textarea).toBeTruthy()
+
+  await act(async () => {
+    if (textarea) {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      valueSetter?.call(textarea, 'List the project files')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+  })
+
+  const sendButton = container.querySelector('button[aria-label="Send message"]') as HTMLButtonElement | null
+  expect(sendButton?.disabled).toBe(false)
+
+  await act(async () => {
+    sendButton?.click()
+  })
+
+  expect(sendWorkspaceChatMessage).toHaveBeenCalledWith('wks_123', 'List the project files')
+  await waitFor(() => {
+    expect(container.textContent).toContain('List the project files')
+    expect(container.textContent).toContain('Sandbox answer for wks_123')
+  })
+})
+
+test('keeps transient AI Chat runtime errors visible in the chat panel', async () => {
+  fetchWorkspaceChatMessages.mockImplementation(() => apiResponse({ messages: [] }))
+  sendWorkspaceChatMessage.mockImplementation((_, message) => apiResponse({
+    user_message: {
+      id: 'temp-user-1',
+      created_at: '2026-07-07T10:01:00Z',
+      role: 'user',
+      content: message,
+    } satisfies WorkspaceChatMessage,
+    assistant_message: {
+      id: 'temp-assistant-1',
+      created_at: '2026-07-07T10:01:01Z',
+      role: 'assistant',
+      content: 'AI Chat failed before the sandbox command completed: sandbox timed out',
+      provider: 'codex',
+      exit_code: -1,
+    } satisfies WorkspaceChatMessage,
+  }))
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Ready to work in VisionTube')
+  })
+
+  const textarea = container.querySelector('textarea[aria-label="Message AI Chat"]') as HTMLTextAreaElement | null
+  const sendButton = container.querySelector('button[aria-label="Send message"]') as HTMLButtonElement | null
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+
+  await act(async () => {
+    if (textarea) {
+      valueSetter?.call(textarea, 'Try again')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+  })
+
+  await act(async () => {
+    sendButton?.click()
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Try again')
+    expect(container.textContent).toContain('sandbox timed out')
+  })
+})
+
+test('sends AI Chat messages with Enter and keeps Shift Enter for multiline editing', async () => {
+  fetchWorkspaceChatMessages.mockImplementation(() => apiResponse({ messages: [] }))
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Ready to work in VisionTube')
+  })
+
+  const textarea = container.querySelector('textarea[aria-label="Message AI Chat"]') as HTMLTextAreaElement | null
+  expect(textarea).toBeTruthy()
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+
+  await act(async () => {
+    if (textarea) {
+      valueSetter?.call(textarea, 'Write a plan')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+  })
+
+  await act(async () => {
+    textarea?.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Enter',
+    }))
+  })
+
+  expect(sendWorkspaceChatMessage).toHaveBeenCalledWith('wks_123', 'Write a plan')
+
+  await waitFor(() => {
+    expect((textarea as HTMLTextAreaElement).value).toBe('')
+  })
+  sendWorkspaceChatMessage.mockClear()
+
+  await act(async () => {
+    if (textarea) {
+      valueSetter?.call(textarea, 'Line one')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+  })
+
+  const shiftEnterEvent = new KeyboardEvent('keydown', {
+    bubbles: true,
+    cancelable: true,
+    key: 'Enter',
+    shiftKey: true,
+  })
+
+  await act(async () => {
+    textarea?.dispatchEvent(shiftEnterEvent)
+  })
+
+  expect(shiftEnterEvent.defaultPrevented).toBe(false)
+  expect(sendWorkspaceChatMessage).not.toHaveBeenCalled()
+})
+
+test('reminds users to configure MAAS before using AI Chat', async () => {
+  fetchQiniuCredentialStatus.mockImplementation(() => apiResponse({
+    configured: true,
+    key_hint: '...box',
+    maas_configured: false,
+    access_key_configured: true,
+    secret_key_configured: true,
+  }))
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Qiniu MAAS API Key is not configured.')
+  })
+
+  expect(container.querySelector('a[href="/credentials"]')?.textContent).toContain('Configure credentials')
+  expect((container.querySelector('textarea[aria-label="Message AI Chat"]') as HTMLTextAreaElement | null)?.disabled).toBe(true)
 })
 
 test('loads sandbox metrics from the monitor tab', async () => {
@@ -496,6 +1032,64 @@ test('downloads an unpreviewed large file from the selected sandbox path', async
     expect(fetchSandboxFileContent).toHaveBeenCalledWith('sbox_456', '/workspace/qiniu__vision-tube/archive.zip')
   })
   expect(window.URL.createObjectURL).toHaveBeenCalled()
+})
+
+test('opens HTML files through the sandbox preview route', async () => {
+  fetchSandboxFiles.mockImplementation((sandboxID: string, path: string) => apiResponse({
+    sandbox_id: sandboxID,
+    entries: [
+      {
+        name: 'snake.html',
+        type: 'file',
+        path: `${path}/snake.html`,
+        size: 2048,
+        owner: 'user',
+        group: 'user',
+        permissions: '-rw-r--r--',
+      },
+    ] satisfies SandboxFileEntry[],
+  }))
+  fetchSandboxFileContent.mockImplementation(() => Promise.resolve({
+    data: new Blob(['<html><body>Snake</body></html>'], { type: 'text/html' }),
+    headers: { 'content-type': 'text/html' },
+  }))
+
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('snake.html')
+  })
+
+  const htmlButton = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === 'snake.html'
+  ))
+  expect(htmlButton).toBeTruthy()
+
+  await act(async () => {
+    htmlButton?.click()
+  })
+
+  await waitFor(() => {
+    expect(fetchSandboxFileContent).toHaveBeenCalledWith('sbox_456', '/workspace/qiniu__vision-tube/snake.html')
+  })
+
+  const previewLink = container.querySelector('a[aria-label="Open HTML preview"]')
+  expect(previewLink?.getAttribute('href')).toBe('/api/v1/workspaces/wks_123/preview/workspace/qiniu__vision-tube/snake.html')
+  expect(previewLink?.getAttribute('target')).toBe('_blank')
 })
 
 test('opens workspace metadata in a settings drawer', async () => {
@@ -728,6 +1322,56 @@ test('prompts to recreate when the workspace sandbox no longer exists', async ()
   })
 
   expect(connectWorkspace).toHaveBeenLastCalledWith('wks_123', { recreate: true })
+})
+
+test('shows a sandbox creation overlay while recreating a workspace sandbox', async () => {
+  connectWorkspace.mockImplementation((workspaceID, options) => {
+    void workspaceID
+    if (options?.recreate) {
+      return new Promise(() => {})
+    }
+    return Promise.reject({
+      response: {
+        status: 409,
+        data: { error: 'workspace sandbox no longer exists' },
+      },
+    })
+  })
+
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Create a new sandbox to continue working in this workspace.')
+  })
+
+  const createButton = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === 'Create new sandbox'
+  ))
+  expect(createButton).toBeTruthy()
+
+  await act(async () => {
+    createButton?.click()
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Creating sandbox')
+  })
+
+  expect(container.textContent).toContain('Mounting qiniu/vision-tube and preparing the runtime.')
 })
 
 test('resets dismissed missing sandbox dialog when workspace changes', async () => {

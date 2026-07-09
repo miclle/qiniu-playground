@@ -195,15 +195,35 @@ func (ctrl *Ctrl) SandboxMetrics(c *fox.Context) any {
 }
 
 func (ctrl *Ctrl) qiniuAPIKey(c *fox.Context, accountID string) (string, error) {
-	credential, err := ctrl.service.QiniuCredential(c.Request.Context(), accountID)
-	if err != nil {
-		return "", httperrors.New(http.StatusPreconditionRequired, "Qiniu API key is not configured")
-	}
-	apiKey, err := ctrl.credentialBox.Decrypt(credential.EncryptedAPIKey)
+	credentials, err := ctrl.qiniuRuntimeCredentials(c, accountID)
 	if err != nil {
 		return "", err
 	}
-	return apiKey, nil
+	return credentials.SandboxAPIKey, nil
+}
+
+type qiniuRuntimeCredentialSet struct {
+	SandboxAPIKey string
+	MAASAPIKey    string
+}
+
+func (ctrl *Ctrl) qiniuRuntimeCredentials(c *fox.Context, accountID string) (qiniuRuntimeCredentialSet, error) {
+	credential, err := ctrl.service.QiniuCredential(c.Request.Context(), accountID)
+	if err != nil {
+		return qiniuRuntimeCredentialSet{}, httperrors.New(http.StatusPreconditionRequired, "Qiniu API key is not configured")
+	}
+	apiKey, err := ctrl.credentialBox.Decrypt(credential.EncryptedAPIKey)
+	if err != nil {
+		return qiniuRuntimeCredentialSet{}, err
+	}
+	var maasAPIKey string
+	if credential.EncryptedMAASAPIKey != "" {
+		maasAPIKey, err = ctrl.credentialBox.Decrypt(credential.EncryptedMAASAPIKey)
+		if err != nil {
+			return qiniuRuntimeCredentialSet{}, err
+		}
+	}
+	return qiniuRuntimeCredentialSet{SandboxAPIKey: apiKey, MAASAPIKey: maasAPIKey}, nil
 }
 
 func (ctrl *Ctrl) githubAccessToken(c *fox.Context, accountID string) (string, error) {

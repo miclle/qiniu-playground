@@ -44,6 +44,7 @@ func TestMigrateUsesExplicitTableNames(t *testing.T) {
 		"github_installations",
 		"github_repositories",
 		"workspaces",
+		"workspace_chat_messages",
 		"qiniu_credentials",
 		"sandbox_sessions",
 	}
@@ -94,6 +95,7 @@ func TestPersistentEntityFieldsDeclareColumnTags(t *testing.T) {
 		entity.GitHubInstallation{},
 		entity.GitHubRepository{},
 		entity.Workspace{},
+		entity.WorkspaceChatMessage{},
 		entity.QiniuCredential{},
 		entity.SandboxSession{},
 	}
@@ -102,7 +104,9 @@ func TestPersistentEntityFieldsDeclareColumnTags(t *testing.T) {
 		modelType := reflect.TypeOf(model)
 		for i := 0; i < modelType.NumField(); i++ {
 			field := modelType.Field(i)
-			if field.PkgPath != "" || field.Type == reflect.TypeOf(entity.Account{}) {
+			if field.PkgPath != "" ||
+				field.Type == reflect.TypeOf(entity.Account{}) ||
+				field.Type == reflect.TypeOf(entity.Workspace{}) {
 				continue
 			}
 			if !strings.Contains(field.Tag.Get("gorm"), "column:") {

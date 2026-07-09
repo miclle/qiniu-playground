@@ -172,7 +172,7 @@ github:
 sandbox:
   endpoint: "${QINIU_SANDBOX_ENDPOINT:-}"
   default_template_id: "${QINIU_SANDBOX_TEMPLATE_ID:-base}"
-  default_timeout_seconds: 120
+  default_timeout_seconds: 86400
 ```
 
 For local development, create a GitHub OAuth app with this callback URL:
@@ -240,7 +240,7 @@ GET  /api/v1/sandboxes/:sandboxID/pty      WebSocket bridge to a sandbox PTY
 POST /api/v1/sandboxes/:sandboxID/connect  Connect to an existing sandbox
 ```
 
-The default sandbox template is `base` and the default timeout is 120 seconds.
+The default sandbox template is `base` and the default timeout is 86400 seconds.
 Both can be changed in `cmd/playground/config.local.yaml`.
 The web terminal uses xterm.js and sends raw terminal input over the PTY
 WebSocket. Browser WebSocket upgrades are accepted only from the same host as

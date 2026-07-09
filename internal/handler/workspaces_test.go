@@ -19,7 +19,7 @@ import (
 func TestOpenRepositoryCreatesSandboxAndStartsIDE(t *testing.T) {
 	ctrl := newTestController(t)
 	user := createAuthenticatedUser(t, ctrl)
-	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	saveEncryptedQiniuKeys(t, ctrl, user.AccountID, "qiniu-api-key", "qiniu-maas-key")
 	if _, err := ctrl.service.SaveGitHubInstallation(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.GitHubInstallationInput{InstallationID: 42}); err != nil {
 		t.Fatalf("save installation: %v", err)
 	}
@@ -73,6 +73,11 @@ func TestOpenRepositoryCreatesSandboxAndStartsIDE(t *testing.T) {
 	}
 	if runtime.lastPrepareRequest.Endpoint != "https://cn-yangzhou-1-sandbox.qiniuapi.com" {
 		t.Fatalf("prepare endpoint = %q, want selected region", runtime.lastPrepareRequest.Endpoint)
+	}
+	if runtime.lastPrepareRequest.Envs["QINIU_MAAS_API_KEY"] != "qiniu-maas-key" ||
+		runtime.lastPrepareRequest.Envs["ANTHROPIC_AUTH_TOKEN"] != "qiniu-maas-key" ||
+		runtime.lastPrepareRequest.Envs["ANTHROPIC_BASE_URL"] != "https://api.qnaigc.com" {
+		t.Fatalf("prepare envs = %#v, want MAAS key injected", runtime.lastPrepareRequest.Envs)
 	}
 	var payload workspaceResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
@@ -182,7 +187,7 @@ func TestOpenRepositoryRejectsMissingTemplate(t *testing.T) {
 func TestCreateWorkspaceWithoutRepository(t *testing.T) {
 	ctrl := newTestController(t)
 	user := createAuthenticatedUser(t, ctrl)
-	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	saveEncryptedQiniuKeys(t, ctrl, user.AccountID, "qiniu-api-key", "qiniu-maas-key")
 
 	router := newTestRouter(ctrl)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces", bytes.NewReader([]byte(`{
@@ -206,8 +211,16 @@ func TestCreateWorkspaceWithoutRepository(t *testing.T) {
 	if runtime.lastWorkspaceRequest.WorkspacePath != "/workspace/Scratch_workspace" {
 		t.Fatalf("workspace path = %q, want /workspace/Scratch_workspace", runtime.lastWorkspaceRequest.WorkspacePath)
 	}
+	if runtime.lastWorkspaceRequest.Envs["QINIU_MAAS_API_KEY"] != "qiniu-maas-key" ||
+		runtime.lastWorkspaceRequest.Envs["ANTHROPIC_AUTH_TOKEN"] != "qiniu-maas-key" ||
+		runtime.lastWorkspaceRequest.Envs["ANTHROPIC_BASE_URL"] != "https://api.qnaigc.com" {
+		t.Fatalf("workspace envs = %#v, want MAAS key injected", runtime.lastWorkspaceRequest.Envs)
+	}
 	if runtime.lastCreateRequest.TemplateID != "node" {
 		t.Fatalf("runtime template id = %q, want node", runtime.lastCreateRequest.TemplateID)
+	}
+	if runtime.lastCreateRequest.TimeoutSeconds != 86400 || runtime.lastWorkspaceRequest.TimeoutSeconds != 86400 {
+		t.Fatalf("runtime timeout = create %d prepare %d, want 86400", runtime.lastCreateRequest.TimeoutSeconds, runtime.lastWorkspaceRequest.TimeoutSeconds)
 	}
 	if runtime.lastCreateRequest.Metadata["created_by"] != "qiniu-playground" ||
 		runtime.lastCreateRequest.Metadata["kind"] != "workspace" ||
@@ -239,6 +252,113 @@ func TestCreateWorkspaceWithoutRepository(t *testing.T) {
 	}
 	if payload.Region != "https://cn-yangzhou-1-sandbox.qiniuapi.com" || payload.TemplateID != "node" {
 		t.Fatalf("payload workspace config = %q/%q, want selected config", payload.Region, payload.TemplateID)
+	}
+}
+
+func TestWorkspaceHeartbeatRefreshesSandboxTimeout(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	workspace, err := ctrl.service.SaveWorkspace(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.WorkspaceInput{
+		Name:          "Scratch_workspace",
+		Region:        "https://cn-yangzhou-1-sandbox.qiniuapi.com",
+		SandboxID:     "sandbox-1",
+		TemplateID:    "node",
+		State:         "running",
+		Endpoint:      "sandbox-1.example.test",
+		WorkspacePath: "/workspace/Scratch_workspace",
+		IDEURL:        "https://sandbox-1.example.test",
+	})
+	if err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/"+workspace.ID+"/heartbeat", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	runtime := ctrl.sandboxRuntime.(*fakeSandboxRuntime)
+	if runtime.lastTimeoutSandboxID != "sandbox-1" {
+		t.Fatalf("timeout sandbox = %q, want sandbox-1", runtime.lastTimeoutSandboxID)
+	}
+	if runtime.lastTimeoutEndpoint != "https://cn-yangzhou-1-sandbox.qiniuapi.com" {
+		t.Fatalf("timeout endpoint = %q, want workspace region", runtime.lastTimeoutEndpoint)
+	}
+	if runtime.lastTimeoutSeconds != 86400 {
+		t.Fatalf("timeout seconds = %d, want 86400", runtime.lastTimeoutSeconds)
+	}
+	var payload struct {
+		OK             bool  `json:"ok"`
+		TimeoutSeconds int32 `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.OK || payload.TimeoutSeconds != 86400 {
+		t.Fatalf("payload = %+v, want ok timeout 86400", payload)
+	}
+}
+
+func TestPauseWorkspaceSandboxMarksWorkspacePaused(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	workspace, err := ctrl.service.SaveWorkspace(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.WorkspaceInput{
+		Name:          "Scratch_workspace",
+		Region:        "https://cn-yangzhou-1-sandbox.qiniuapi.com",
+		SandboxID:     "sandbox-1",
+		TemplateID:    "node",
+		State:         "running",
+		Endpoint:      "sandbox-1.example.test",
+		WorkspacePath: "/workspace/Scratch_workspace",
+		IDEURL:        "https://sandbox-1.example.test",
+	})
+	if err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/"+workspace.ID+"/pause", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	runtime := ctrl.sandboxRuntime.(*fakeSandboxRuntime)
+	if runtime.lastPausedSandboxID != "sandbox-1" {
+		t.Fatalf("paused sandbox = %q, want sandbox-1", runtime.lastPausedSandboxID)
+	}
+	if runtime.lastPauseEndpoint != "https://cn-yangzhou-1-sandbox.qiniuapi.com" {
+		t.Fatalf("pause endpoint = %q, want workspace region", runtime.lastPauseEndpoint)
+	}
+	var payload workspaceResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.State != "paused" {
+		t.Fatalf("payload state = %q, want paused", payload.State)
+	}
+	updated, err := ctrl.service.Workspace(req.Context(), user.AccountID, workspace.ID)
+	if err != nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	if updated.State != "paused" {
+		t.Fatalf("workspace state = %q, want paused", updated.State)
 	}
 }
 
@@ -431,7 +551,7 @@ func TestConnectWorkspaceRecreatesMissingSandboxWhenRequested(t *testing.T) {
 func TestConnectWorkspaceRecreatesRepositoryWorkspace(t *testing.T) {
 	ctrl := newTestController(t)
 	user := createAuthenticatedUser(t, ctrl)
-	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	saveEncryptedQiniuKeys(t, ctrl, user.AccountID, "qiniu-api-key", "qiniu-maas-key")
 	if _, err := ctrl.service.SaveGitHubInstallation(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.GitHubInstallationInput{InstallationID: 42}); err != nil {
 		t.Fatalf("save installation: %v", err)
 	}
@@ -481,6 +601,11 @@ func TestConnectWorkspaceRecreatesRepositoryWorkspace(t *testing.T) {
 	}
 	if runtime.lastPrepareRequest.DefaultBranch != "main" || runtime.lastPrepareRequest.Token != "installation-token" {
 		t.Fatalf("prepare request = %+v, want default branch and installation token", runtime.lastPrepareRequest)
+	}
+	if runtime.lastPrepareRequest.Envs["QINIU_MAAS_API_KEY"] != "qiniu-maas-key" ||
+		runtime.lastPrepareRequest.Envs["ANTHROPIC_AUTH_TOKEN"] != "qiniu-maas-key" ||
+		runtime.lastPrepareRequest.Envs["ANTHROPIC_BASE_URL"] != "https://api.qnaigc.com" {
+		t.Fatalf("prepare envs = %#v, want MAAS key injected", runtime.lastPrepareRequest.Envs)
 	}
 	if runtime.lastPrepareRequest.WorkspacePath != "/workspace/octocat-hello-world" {
 		t.Fatalf("prepare workspace path = %q, want saved workspace path", runtime.lastPrepareRequest.WorkspacePath)

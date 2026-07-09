@@ -82,6 +82,50 @@ func TestCloneOrUpdateRepositoryCommandPreservesExistingClone(t *testing.T) {
 	}
 }
 
+func TestShellExportCommandsDoNotEmbedSecretValues(t *testing.T) {
+	got := shellExportCommands(map[string]string{
+		"ANTHROPIC_AUTH_TOKEN": "maas-secret-value",
+		"ANTHROPIC_BASE_URL":   "https://api.qnaigc.com",
+		"QINIU_MAAS_API_KEY":   "maas-secret-value",
+	}, "~/.config/qiniu-playground/env")
+
+	if strings.Contains(got, "maas-secret-value") {
+		t.Fatalf("shellExportCommands() should not embed secret values: %q", got)
+	}
+	want := "export -p | grep -E '^(export |declare -x )?(ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL|QINIU_MAAS_API_KEY)=' > ~/.config/qiniu-playground/env"
+	if got != want {
+		t.Fatalf("shellExportCommands() = %q, want %q", got, want)
+	}
+}
+
+func TestAIChatCommandPrefersClaudeThenCodexAndFallsBackToExistingDirectory(t *testing.T) {
+	got := aiChatCommand()
+	for _, want := range []string{
+		`workspace_path="${QINIU_PLAYGROUND_CHAT_WORKSPACE_PATH:-}"`,
+		`cd "$workspace_path"`,
+		"elif [ -d /home/user ]; then cd /home/user",
+		"command -v claude",
+		`claude --print --bare --dangerously-skip-permissions -- "$QINIU_PLAYGROUND_CHAT_PROMPT" 2>&1`,
+		"command -v codex",
+		`codex exec --skip-git-repo-check -- "$QINIU_PLAYGROUND_CHAT_PROMPT" 2>&1`,
+		"Neither claude nor codex CLI is available",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("aiChatCommand() missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestStripAIChatProviderMarker(t *testing.T) {
+	got := stripAIChatProviderMarker("__qiniu_playground_provider__:codex\nhello\n")
+	if got != "hello" {
+		t.Fatalf("stripAIChatProviderMarker() = %q, want hello", got)
+	}
+	if provider := aiChatProviderFromOutput("__qiniu_playground_provider__:claude\nhello\n"); provider != "claude" {
+		t.Fatalf("provider = %q, want claude", provider)
+	}
+}
+
 func TestGetSandboxMetricsUsesReadOnlyAPI(t *testing.T) {
 	var gotPath, gotStart, gotEnd, gotAPIKey, gotAuthorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

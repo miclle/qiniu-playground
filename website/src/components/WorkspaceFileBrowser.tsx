@@ -7,6 +7,7 @@ import {
   CornerUpLeft,
   Copy,
   Download,
+  ExternalLink,
   File,
   Folder,
   Loader2,
@@ -15,9 +16,9 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { sandboxFileContent, sandboxFiles } from 'src/api/filesystem'
+import { sandboxFileContent, sandboxFilePreviewURL, sandboxFiles, workspaceFilePreviewURL } from 'src/api/filesystem'
 import type { SandboxFileEntry } from 'src/api/filesystem'
-import { Button } from 'src/components/ui/button'
+import { Button, buttonVariants } from 'src/components/ui/button'
 import { Input } from 'src/components/ui/input'
 import { cn } from 'src/lib/utils'
 
@@ -62,6 +63,7 @@ interface DirectoryState {
 }
 
 interface WorkspaceFileBrowserProps {
+  workspaceID?: string
   sandboxID?: string
   workspacePath?: string
   disabled?: boolean
@@ -97,6 +99,10 @@ function isPreviewable(entry: SandboxFileEntry, contentType: string) {
     return false
   }
   return textExtensions.has(fileExtension(entry))
+}
+
+function isHTMLFile(entry: SandboxFileEntry) {
+  return ['html', 'htm'].includes(fileExtension(entry))
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -138,6 +144,7 @@ function parentPath(filePath: string) {
 }
 
 export function WorkspaceFileBrowser({
+  workspaceID,
   sandboxID,
   workspacePath,
   disabled,
@@ -363,7 +370,7 @@ export function WorkspaceFileBrowser({
     const containerWidth = splitContainerRef.current?.getBoundingClientRect().width
 
     const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
-      setTreeWidth(clampTreeWidth(startWidth + moveEvent.clientX - startX, containerWidth))
+      setTreeWidth(clampTreeWidth(startWidth + startX - moveEvent.clientX, containerWidth))
     }
     const handlePointerUp = () => {
       document.removeEventListener('pointermove', handlePointerMove)
@@ -442,87 +449,184 @@ export function WorkspaceFileBrowser({
   }
 
   const selectedFileDetails = selectedFile ? entryDetails(selectedFile, fileContentType) : []
+  const selectedFilePreviewURL = selectedFile && isHTMLFile(selectedFile)
+    ? workspaceID
+      ? workspaceFilePreviewURL(workspaceID, selectedFile.path)
+      : sandboxID
+        ? sandboxFilePreviewURL(sandboxID, selectedFile.path)
+        : ''
+    : ''
+  const treePane = (
+    <div className="flex min-w-0 flex-col border-b lg:border-b-0">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b px-3 focus-within:border-primary focus-within:shadow-[inset_0_-1px_0_hsl(var(--primary)),0_1px_0_hsl(var(--primary)/0.12)]">
+        <span className="font-mono text-xs text-muted-foreground">$</span>
+        <Input
+          value={pathInput}
+          onChange={(event) => setPathInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              openPath(pathInput)
+            }
+          }}
+          className="h-7 min-w-0 flex-1 border-transparent bg-transparent px-2 font-mono text-xs shadow-none focus-visible:border-transparent focus-visible:ring-0"
+          aria-label="Filesystem path"
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+          aria-label="Open path"
+          title="Open path"
+          onClick={() => openPath(pathInput)}
+          disabled={!pathInput.trim() || pathInput.trim() === path}
+        >
+          <ArrowRight className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+          aria-label="Refresh files"
+          title="Refresh files"
+          onClick={refreshRoot}
+          disabled={filesQuery.isFetching}
+        >
+          <RefreshCw className={cn('h-4 w-4', filesQuery.isFetching && 'animate-spin')} />
+        </Button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        {filesQuery.isLoading ? (
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Loading files...
+          </div>
+        ) : filesQuery.isError ? (
+          <div className="p-4 text-sm text-destructive">Failed to load files.</div>
+        ) : (
+          <div>
+            {path !== '/' ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="flex h-8 w-full justify-start rounded-none px-1.5 font-normal"
+                title={parentPath(path)}
+                aria-label="Open parent directory"
+                onClick={() => openPath(parentPath(path))}
+              >
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="h-3.5 w-3.5 shrink-0" />
+                  <CornerUpLeft className="h-4 w-4 text-muted-foreground" />
+                  <span className="truncate font-mono text-xs">..</span>
+                </span>
+              </Button>
+            ) : null}
+            {entries.map((entry) => renderEntry(entry))}
+            {entries.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">No files in this directory.</div>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+  const previewPane = (
+    <div className="flex min-w-0 flex-col">
+      {selectedFile ? (
+        <>
+          <div className="flex h-10 shrink-0 items-center gap-3 border-b px-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <File className="h-4 w-4 text-muted-foreground" />
+              <span className="truncate font-mono text-xs">{selectedFile.path}</span>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+              aria-label="Copy file preview"
+              title="Copy file preview"
+              disabled={!filePreviewable || !fileContent}
+              onClick={() => void navigator.clipboard?.writeText(fileContent)}
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+              aria-label="Download file"
+              title="Download file"
+              disabled={fileLoading}
+              onClick={() => void downloadSelectedFile()}
+            >
+              <Download className="h-4 w-4" />
+            </Button>
+            {selectedFilePreviewURL ? (
+              <a
+                className={cn(
+                  buttonVariants({ variant: 'ghost', size: 'icon' }),
+                  'h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground',
+                )}
+                aria-label="Open HTML preview"
+                title="Open HTML preview"
+                href={selectedFilePreviewURL}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink className="h-4 w-4" />
+              </a>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+              aria-label="Close preview"
+              title="Close preview"
+              onClick={() => {
+                selectedFilePathRef.current = null
+                setSelectedFile(null)
+              }}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="min-h-0 w-full flex-1 overflow-auto bg-muted/20">
+            {fileLoading ? (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Loading preview...
+              </div>
+            ) : fileError ? (
+              <div className="p-4 text-sm text-destructive">{fileError}</div>
+            ) : filePreviewable ? (
+              <pre className="min-h-full w-full overflow-auto p-4 font-mono text-xs leading-6 text-foreground">{fileContent}</pre>
+            ) : (
+              <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
+                Preview is unavailable for this file. Use download to inspect it locally.
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
+          Select a file to preview it here.
+        </div>
+      )}
+    </div>
+  )
 
   return (
     <div
       ref={splitContainerRef}
-      className="grid h-full min-h-0 w-full grid-cols-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-background lg:grid-cols-[var(--file-tree-width)_4px_minmax(0,1fr)]"
+      className="grid h-full min-h-0 w-full grid-cols-1 grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] overflow-hidden bg-background lg:grid-cols-[minmax(0,1fr)_4px_var(--file-tree-width)] lg:grid-rows-[minmax(0,1fr)_auto]"
       style={{ '--file-tree-width': `${treeWidth}px` } as CSSProperties}
     >
-      <div className="flex min-w-0 flex-col border-b lg:border-b-0">
-        <div className="flex h-10 shrink-0 items-center gap-2 border-b px-3 focus-within:border-primary focus-within:shadow-[inset_0_-1px_0_hsl(var(--primary)),0_1px_0_hsl(var(--primary)/0.12)]">
-          <span className="font-mono text-xs text-muted-foreground">$</span>
-          <Input
-            value={pathInput}
-            onChange={(event) => setPathInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                openPath(pathInput)
-              }
-            }}
-            className="h-7 min-w-0 flex-1 border-transparent bg-transparent px-2 font-mono text-xs shadow-none focus-visible:border-transparent focus-visible:ring-0"
-            aria-label="Filesystem path"
-          />
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
-            aria-label="Open path"
-            title="Open path"
-            onClick={() => openPath(pathInput)}
-            disabled={!pathInput.trim() || pathInput.trim() === path}
-          >
-            <ArrowRight className="h-4 w-4" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
-            aria-label="Refresh files"
-            title="Refresh files"
-            onClick={refreshRoot}
-            disabled={filesQuery.isFetching}
-          >
-            <RefreshCw className={cn('h-4 w-4', filesQuery.isFetching && 'animate-spin')} />
-          </Button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-auto">
-          {filesQuery.isLoading ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Loading files...
-            </div>
-          ) : filesQuery.isError ? (
-            <div className="p-4 text-sm text-destructive">Failed to load files.</div>
-          ) : (
-            <div>
-              {path !== '/' ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="flex h-8 w-full justify-start rounded-none px-1.5 font-normal"
-                  title={parentPath(path)}
-                  aria-label="Open parent directory"
-                  onClick={() => openPath(parentPath(path))}
-                >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <span className="h-3.5 w-3.5 shrink-0" />
-                    <CornerUpLeft className="h-4 w-4 text-muted-foreground" />
-                    <span className="truncate font-mono text-xs">..</span>
-                  </span>
-                </Button>
-              ) : null}
-              {entries.map((entry) => renderEntry(entry))}
-              {entries.length === 0 ? (
-                <div className="p-4 text-sm text-muted-foreground">No files in this directory.</div>
-              ) : null}
-            </div>
-          )}
-        </div>
-      </div>
+      {previewPane}
 
       <div
         role="separator"
@@ -537,87 +641,18 @@ export function WorkspaceFileBrowser({
         onKeyDown={(event) => {
           if (event.key === 'ArrowLeft') {
             event.preventDefault()
-            updateTreeWidth(treeWidth - 24)
+            updateTreeWidth(treeWidth + 24)
           }
           if (event.key === 'ArrowRight') {
             event.preventDefault()
-            updateTreeWidth(treeWidth + 24)
+            updateTreeWidth(treeWidth - 24)
           }
         }}
       >
         <div className="mx-auto h-full w-px bg-border transition-[width,background-color] group-hover:w-1 group-hover:bg-primary/60 group-focus-visible:w-1 group-focus-visible:bg-primary/60" />
       </div>
 
-      <div className="flex min-w-0 flex-col">
-        {selectedFile ? (
-          <>
-            <div className="flex h-10 shrink-0 items-center gap-3 border-b px-3">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <File className="h-4 w-4 text-muted-foreground" />
-                <span className="truncate font-mono text-xs">{selectedFile.path}</span>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
-                aria-label="Copy file preview"
-                title="Copy file preview"
-                disabled={!filePreviewable || !fileContent}
-                onClick={() => void navigator.clipboard?.writeText(fileContent)}
-              >
-                <Copy className="h-4 w-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
-                aria-label="Download file"
-                title="Download file"
-                disabled={fileLoading}
-                onClick={() => void downloadSelectedFile()}
-              >
-                <Download className="h-4 w-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
-                aria-label="Close preview"
-                title="Close preview"
-                onClick={() => {
-                  selectedFilePathRef.current = null
-                  setSelectedFile(null)
-                }}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="min-h-0 w-full flex-1 overflow-auto bg-muted/20">
-              {fileLoading ? (
-                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Loading preview...
-                </div>
-              ) : fileError ? (
-                <div className="p-4 text-sm text-destructive">{fileError}</div>
-              ) : filePreviewable ? (
-                <pre className="min-h-full w-full overflow-auto p-4 font-mono text-xs leading-6 text-foreground">{fileContent}</pre>
-              ) : (
-                <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
-                  Preview is unavailable for this file. Use download to inspect it locally.
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
-            Select a file to preview it here.
-          </div>
-        )}
-      </div>
+      {treePane}
 
       <div
         role="status"

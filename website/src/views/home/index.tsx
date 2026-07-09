@@ -4,6 +4,7 @@ import { lazy, Suspense, useState } from 'react'
 import {
   ChevronDown,
   GitBranch,
+  LoaderCircle,
   PanelsTopLeft,
   Plus,
   RefreshCw,
@@ -112,6 +113,27 @@ function sanitizeWorkspaceName(value: string) {
 
 function workspaceNameFromRepository(fullName: string) {
   return fullName.trim().replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^[-_]+|[-_]+$/g, '') || 'workspace'
+}
+
+function SandboxCreationOverlay({ repository }: { repository?: string }) {
+  return (
+    <div
+      className="absolute inset-0 z-10 flex items-center justify-center bg-background/80 p-6 backdrop-blur-sm"
+      role="status"
+      aria-live="polite"
+      aria-label="Creating sandbox"
+    >
+      <div className="flex w-full max-w-sm flex-col items-center rounded-md border bg-background px-5 py-6 text-center shadow-lg">
+        <LoaderCircle className="h-8 w-8 animate-spin text-primary" />
+        <h2 className="mt-4 text-base font-semibold">Creating sandbox</h2>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          {repository
+            ? `Mounting ${repository} and preparing the runtime.`
+            : 'Preparing the runtime and workspace files.'}
+        </p>
+      </div>
+    </div>
+  )
 }
 
 function formatWorkspaceTime(value?: string) {
@@ -263,6 +285,7 @@ function Home({ page }: HomeProps) {
   const installations = installationsQuery.data?.data.installations ?? []
   const repos = reposQuery.data?.data.repositories ?? []
   const selectedRepo = repos.find((repo) => repo.id === selectedRepoID)
+  const creatingWorkspace = openRepositoryMutation.isPending || createWorkspaceMutation.isPending
   const selectedRegion = workspaceRegions.find((region) => region.endpoint === workspaceConfig.region) ?? workspaceRegions[0]
   const workspaceRows = workspacesQuery.data?.data.workspaces ?? []
   const hasGitHubInstallation = installations.length > 0 || repos.length > 0
@@ -348,7 +371,8 @@ function Home({ page }: HomeProps) {
         }
       }}
     >
-      <DialogContent className="max-w-4xl gap-0 overflow-visible rounded-md p-0 sm:max-w-4xl" showCloseButton={false}>
+      <DialogContent className="relative max-w-4xl gap-0 overflow-hidden rounded-md p-0 sm:max-w-4xl" showCloseButton={false}>
+        {creatingWorkspace ? <SandboxCreationOverlay repository={selectedRepo?.full_name} /> : null}
         <form onSubmit={handleWorkspaceSubmit}>
           <DialogHeader className="border-b px-5 py-4">
             <DialogTitle>Create workspace</DialogTitle>

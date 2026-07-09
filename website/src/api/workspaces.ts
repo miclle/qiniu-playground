@@ -37,3 +37,23 @@ export interface ConnectWorkspaceOptions {
 export function connectWorkspace(workspaceID: string, options?: ConnectWorkspaceOptions) {
   return client.post<Workspace>(`/workspaces/${workspaceID}/connect`, options)
 }
+
+export function heartbeatWorkspace(workspaceID: string) {
+  return client.post<{ ok: boolean, timeout_seconds: number }>(`/workspaces/${workspaceID}/heartbeat`)
+}
+
+export function pauseWorkspaceSandbox(workspaceID: string, options?: { keepalive?: boolean }) {
+  if (options?.keepalive && typeof fetch === 'function') {
+    return fetch(`/api/v1/workspaces/${workspaceID}/pause`, {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+    }).then((response) => {
+      if (!response.ok) {
+        throw new Error(`pause workspace sandbox failed with status ${response.status}`)
+      }
+      return response
+    })
+  }
+  return client.post<Workspace>(`/workspaces/${workspaceID}/pause`)
+}

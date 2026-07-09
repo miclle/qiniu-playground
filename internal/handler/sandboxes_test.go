@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	qiniusb "github.com/qiniu/go-sdk/v7/sandbox"
 
 	"github.com/miclle/qiniu-playground/internal/service"
 )
@@ -211,6 +214,156 @@ func TestSandboxFileContentReadsFile(t *testing.T) {
 	}
 }
 
+func TestSandboxFilePreviewServesHTMLWithSandboxCSP(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	if _, err := ctrl.service.SaveSandboxSession(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.SandboxSessionInput{
+		SandboxID:  "sandbox-2",
+		TemplateID: "base",
+		State:      "running",
+		Region:     "https://cn-yangzhou-1-sandbox.qiniuapi.com",
+	}); err != nil {
+		t.Fatalf("save sandbox session: %v", err)
+	}
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sandbox-2/preview/home/user/snake.html", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("content type = %q, want html", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "sandbox;") || !strings.Contains(got, "connect-src 'none'") {
+		t.Fatalf("csp = %q, want sandboxed preview without network access", got)
+	}
+	runtime := ctrl.sandboxRuntime.(*fakeSandboxRuntime)
+	if runtime.lastAPIKey != "qiniu-api-key" {
+		t.Fatalf("runtime api key = %q, want decrypted key", runtime.lastAPIKey)
+	}
+	if runtime.lastFilesystemEndpoint != "https://cn-yangzhou-1-sandbox.qiniuapi.com" {
+		t.Fatalf("filesystem endpoint = %q, want session region", runtime.lastFilesystemEndpoint)
+	}
+	if runtime.lastFilesystemPath != "/home/user/snake.html" {
+		t.Fatalf("filesystem path = %q, want requested preview file", runtime.lastFilesystemPath)
+	}
+}
+
+func TestSandboxFilePreviewRejectsEmptyPath(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	if _, err := ctrl.service.SaveSandboxSession(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.SandboxSessionInput{
+		SandboxID:  "sandbox-2",
+		TemplateID: "base",
+		State:      "running",
+	}); err != nil {
+		t.Fatalf("save sandbox session: %v", err)
+	}
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sandboxes/sandbox-2/preview/", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	runtime := ctrl.sandboxRuntime.(*fakeSandboxRuntime)
+	if runtime.lastFilesystemPath != "" {
+		t.Fatalf("filesystem path = %q, want runtime not called", runtime.lastFilesystemPath)
+	}
+}
+
+func TestWorkspaceFilePreviewUsesCurrentWorkspaceSandbox(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	workspace, err := ctrl.service.SaveWorkspace(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.WorkspaceInput{
+		Name:          "Scratch",
+		Region:        "https://cn-yangzhou-1-sandbox.qiniuapi.com",
+		SandboxID:     "sandbox-current",
+		TemplateID:    "node",
+		State:         "running",
+		WorkspacePath: "/workspace/Scratch",
+	})
+	if err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/"+workspace.ID+"/preview/home/user/snake.html", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("content type = %q, want html", got)
+	}
+	runtime := ctrl.sandboxRuntime.(*fakeSandboxRuntime)
+	if runtime.lastFilesystemPath != "/home/user/snake.html" {
+		t.Fatalf("filesystem path = %q, want requested preview file", runtime.lastFilesystemPath)
+	}
+	if runtime.lastFilesystemEndpoint != "https://cn-yangzhou-1-sandbox.qiniuapi.com" {
+		t.Fatalf("filesystem endpoint = %q, want workspace region", runtime.lastFilesystemEndpoint)
+	}
+}
+
+func TestWorkspaceFilePreviewReportsMissingRuntimeSandbox(t *testing.T) {
+	ctrl := newTestController(t)
+	user := createAuthenticatedUser(t, ctrl)
+	saveEncryptedAPIKey(t, ctrl, user.AccountID, "qiniu-api-key")
+	workspace, err := ctrl.service.SaveWorkspace(httptest.NewRequest(http.MethodGet, "/", nil).Context(), user.AccountID, service.WorkspaceInput{
+		Name:          "Scratch",
+		Region:        "https://cn-yangzhou-1-sandbox.qiniuapi.com",
+		SandboxID:     "sandbox-gone",
+		TemplateID:    "node",
+		State:         "running",
+		WorkspacePath: "/workspace/Scratch",
+	})
+	if err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	ctrl.sandboxRuntime.(*fakeSandboxRuntime).readFileErr = &qiniusb.APIError{
+		StatusCode: http.StatusBadGateway,
+		Message:    "The sandbox was not found",
+	}
+	router := newTestRouter(ctrl)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/"+workspace.ID+"/preview/home/user/snake.html", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  sessionCookieName,
+		Value: ctrl.sessionSigner.Sign(user.AccountID, time.Now()),
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "workspace sandbox no longer exists") {
+		t.Fatalf("body = %q, want missing sandbox message", rec.Body.String())
+	}
+}
+
 func TestSandboxMetricsUsesSessionRegion(t *testing.T) {
 	ctrl := newTestController(t)
 	user := createAuthenticatedUser(t, ctrl)
@@ -289,14 +442,30 @@ func TestSandboxMetricsRejectsInvalidRange(t *testing.T) {
 
 func saveEncryptedAPIKey(t *testing.T, ctrl *Ctrl, accountID, apiKey string) {
 	t.Helper()
+	saveEncryptedQiniuKeys(t, ctrl, accountID, apiKey, "")
+}
+
+func saveEncryptedQiniuKeys(t *testing.T, ctrl *Ctrl, accountID, apiKey, maasAPIKey string) {
+	t.Helper()
 
 	encrypted, err := ctrl.credentialBox.Encrypt(apiKey)
 	if err != nil {
 		t.Fatalf("encrypt api key: %v", err)
 	}
+	var maasKeyHint string
+	var encryptedMAASAPIKey string
+	if maasAPIKey != "" {
+		maasKeyHint = keyHint(maasAPIKey)
+		encryptedMAASAPIKey, err = ctrl.credentialBox.Encrypt(maasAPIKey)
+		if err != nil {
+			t.Fatalf("encrypt maas api key: %v", err)
+		}
+	}
 	if _, err := ctrl.service.SaveQiniuCredential(httptest.NewRequest(http.MethodGet, "/", nil).Context(), accountID, service.QiniuCredentialInput{
-		KeyHint:         keyHint(apiKey),
-		EncryptedAPIKey: encrypted,
+		KeyHint:             keyHint(apiKey),
+		EncryptedAPIKey:     encrypted,
+		MAASKeyHint:         maasKeyHint,
+		EncryptedMAASAPIKey: encryptedMAASAPIKey,
 	}); err != nil {
 		t.Fatalf("save qiniu credential: %v", err)
 	}

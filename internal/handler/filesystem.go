@@ -3,7 +3,9 @@ package handler
 import (
 	"bytes"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -108,6 +110,67 @@ func (ctrl *Ctrl) SandboxFileContent(c *fox.Context) any {
 	return err
 }
 
+func (ctrl *Ctrl) SandboxFilePreview(c *fox.Context) any {
+	_, sandboxID, apiKey, endpoint, err := ctrl.sandboxFilesystemContext(c)
+	if err != nil {
+		return err
+	}
+	filePath, err := sandboxPreviewPath(c)
+	if err != nil {
+		return err
+	}
+	return ctrl.serveSandboxFilePreview(c, sandboxID, apiKey, endpoint, filePath)
+}
+
+func (ctrl *Ctrl) WorkspaceFilePreview(c *fox.Context) any {
+	accountID, err := ctrl.accountIDFromRequest(c)
+	if err != nil {
+		return httperrors.New(http.StatusUnauthorized, "unauthorized")
+	}
+	workspaceID := c.Param("workspaceID")
+	if workspaceID == "" {
+		return httperrors.New(http.StatusBadRequest, "workspace id is required")
+	}
+	workspace, err := ctrl.service.Workspace(c.Request.Context(), accountID, workspaceID)
+	if err != nil {
+		return httperrors.New(http.StatusNotFound, "workspace not found")
+	}
+	if workspace.SandboxID == "" {
+		return httperrors.New(http.StatusPreconditionRequired, "workspace sandbox is not connected")
+	}
+	filePath, err := sandboxPreviewPath(c)
+	if err != nil {
+		return err
+	}
+	apiKey, err := ctrl.qiniuAPIKey(c, accountID)
+	if err != nil {
+		return err
+	}
+	return ctrl.serveSandboxFilePreview(c, workspace.SandboxID, apiKey, workspace.Region, filePath)
+}
+
+func (ctrl *Ctrl) serveSandboxFilePreview(c *fox.Context, sandboxID, apiKey, endpoint, filePath string) any {
+	stream, err := ctrl.sandboxRuntime.ReadFileStream(c.Request.Context(), apiKey, sandboxID, endpoint, filePath)
+	if err != nil {
+		if isSandboxNotFoundError(err) {
+			return httperrors.New(http.StatusConflict, "workspace sandbox no longer exists")
+		}
+		return err
+	}
+	defer func() {
+		_ = stream.Close()
+	}()
+
+	contentType := sandboxPreviewContentType(filePath)
+	c.Writer.Header().Set("Content-Type", contentType)
+	c.Writer.Header().Set("Content-Disposition", "inline; filename*=UTF-8''"+url.PathEscape(path.Base(filePath)))
+	c.Writer.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src * data: blob:; style-src * 'unsafe-inline'; font-src * data:; connect-src 'none'; form-action 'none'; base-uri 'none'")
+	c.Writer.Header().Set("X-Content-Type-Options", "nosniff")
+	c.Writer.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(c.Writer, stream)
+	return nil
+}
+
 func (ctrl *Ctrl) sandboxFilesystemContext(c *fox.Context) (accountID, sandboxID, apiKey, endpoint string, err error) {
 	accountID, err = ctrl.accountIDFromRequest(c)
 	if err != nil {
@@ -140,4 +203,42 @@ func sandboxFilesystemPath(c *fox.Context, emptyMessage string) (string, error) 
 		return "", httperrors.New(http.StatusBadRequest, "path must be absolute")
 	}
 	return path.Clean(filePath), nil
+}
+
+func sandboxPreviewPath(c *fox.Context) (string, error) {
+	filePath := c.Param("previewPath")
+	if filePath == "" {
+		return "", httperrors.New(http.StatusBadRequest, "file path is required")
+	}
+	if !strings.HasPrefix(filePath, "/") {
+		filePath = "/" + filePath
+	}
+	filePath = path.Clean(filePath)
+	if filePath == "/" {
+		return "", httperrors.New(http.StatusBadRequest, "file path is required")
+	}
+	return filePath, nil
+}
+
+func sandboxPreviewContentType(filePath string) string {
+	extension := strings.ToLower(path.Ext(filePath))
+	switch extension {
+	case ".html", ".htm":
+		return "text/html; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".js", ".mjs":
+		return "text/javascript; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".svg":
+		return "image/svg+xml"
+	}
+	if contentType := mime.TypeByExtension(extension); contentType != "" {
+		if strings.HasPrefix(contentType, "text/") && !strings.Contains(strings.ToLower(contentType), "charset") {
+			return contentType + "; charset=utf-8"
+		}
+		return contentType
+	}
+	return "application/octet-stream"
 }

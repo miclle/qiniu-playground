@@ -23,6 +23,7 @@ func newTestService(t *testing.T) *Service {
 		&entity.GitHubInstallation{},
 		&entity.GitHubRepository{},
 		&entity.Workspace{},
+		&entity.WorkspaceChatMessage{},
 		&entity.QiniuCredential{},
 		&entity.SandboxSession{},
 	); err != nil {

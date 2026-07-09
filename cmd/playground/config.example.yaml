@@ -21,7 +21,7 @@ github:
 sandbox:
   endpoint: "${QINIU_SANDBOX_ENDPOINT:-}"
   default_template_id: "${QINIU_SANDBOX_TEMPLATE_ID:-base}"
-  default_timeout_seconds: 120
+  default_timeout_seconds: 86400
 
 # Environment variables are supported:
 # dsn: "${DATABASE_URL:-host=localhost port=5432 user=postgres password=postgres dbname=app sslmode=disable}"

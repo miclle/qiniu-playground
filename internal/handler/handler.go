@@ -35,7 +35,7 @@ func New(svc *service.Service, cfg *config.Config) *Ctrl {
 	}
 	timeoutSeconds := cfg.Sandbox.DefaultTimeoutSeconds
 	if timeoutSeconds == 0 {
-		timeoutSeconds = 120
+		timeoutSeconds = config.DefaultSandboxTimeoutSeconds
 	}
 	return &Ctrl{
 		service:                      svc,
@@ -72,6 +72,11 @@ func (ctrl *Ctrl) RegisterRoutes(r *fox.Engine) {
 	api.GET("/workspaces", ctrl.Workspaces)
 	api.POST("/workspaces", ctrl.CreateWorkspace)
 	api.POST("/workspaces/:workspaceID/connect", ctrl.ConnectWorkspace)
+	api.POST("/workspaces/:workspaceID/heartbeat", ctrl.WorkspaceHeartbeat)
+	api.POST("/workspaces/:workspaceID/pause", ctrl.PauseWorkspaceSandbox)
+	api.GET("/workspaces/:workspaceID/preview/*previewPath", ctrl.WorkspaceFilePreview)
+	api.GET("/workspaces/:workspaceID/chat/messages", ctrl.WorkspaceChatMessages)
+	api.POST("/workspaces/:workspaceID/chat/messages", ctrl.SendWorkspaceChatMessage)
 	api.POST("/repositories/:repositoryID/open", ctrl.OpenRepository)
 	api.GET("/qiniu/credentials", ctrl.QiniuCredentialStatus)
 	api.PUT("/qiniu/credentials", ctrl.SaveQiniuCredential)
@@ -80,6 +85,7 @@ func (ctrl *Ctrl) RegisterRoutes(r *fox.Engine) {
 	api.GET("/sandboxes", ctrl.SandboxSessions)
 	api.POST("/sandboxes", ctrl.CreateSandbox)
 	api.Any("/sandboxes/:sandboxID/ide/*proxyPath", ctrl.SandboxIDEProxy)
+	api.GET("/sandboxes/:sandboxID/preview/*previewPath", ctrl.SandboxFilePreview)
 	api.GET("/sandboxes/:sandboxID/filesystem", ctrl.SandboxFiles)
 	api.GET("/sandboxes/:sandboxID/filesystem/content", ctrl.SandboxFileContent)
 	api.GET("/sandboxes/:sandboxID/metrics", ctrl.SandboxMetrics)

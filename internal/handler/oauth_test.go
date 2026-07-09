@@ -46,12 +46,23 @@ type fakeSandboxRuntime struct {
 	lastFilesystemPath     string
 	lastMetricsEndpoint    string
 	lastMetricsParams      sandboxMetricsParams
+	lastAIChatEndpoint     string
+	lastAIChatRequest      sandboxRuntimeAIChatRequest
+	lastTimeoutSandboxID   string
+	lastTimeoutEndpoint    string
+	lastTimeoutSeconds     int32
+	lastPauseEndpoint      string
+	lastPausedSandboxID    string
 	lastRepo               string
 	lastPTYInput           string
 	lastPTYSize            sandboxPTYSize
 	onPTYData              func([]byte)
 	templates              []sandboxRuntimeTemplate
 	connectErr             error
+	readFileErr            error
+	aiChatResult           *sandboxRuntimeAIChatResult
+	aiChatErr              error
+	aiChatNilResult        bool
 }
 
 type fakePTYSession struct {
@@ -186,6 +197,9 @@ func (f *fakeSandboxRuntime) ReadFileStream(ctx context.Context, apiKey, sandbox
 	f.lastAPIKey = apiKey
 	f.lastFilesystemEndpoint = endpoint
 	f.lastFilesystemPath = filePath
+	if f.readFileErr != nil {
+		return nil, f.readFileErr
+	}
 	return io.NopCloser(strings.NewReader("hello from sandbox\n")), nil
 }
 
@@ -206,6 +220,41 @@ func (f *fakeSandboxRuntime) GetMetrics(ctx context.Context, apiKey, sandboxID, 
 			TimestampUnix: now.Unix(),
 		},
 	}, nil
+}
+
+func (f *fakeSandboxRuntime) RunAIChat(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeAIChatRequest) (*sandboxRuntimeAIChatResult, error) {
+	f.lastAPIKey = apiKey
+	f.lastAIChatEndpoint = endpoint
+	f.lastAIChatRequest = req
+	if f.aiChatErr != nil {
+		return nil, f.aiChatErr
+	}
+	if f.aiChatNilResult {
+		return nil, nil
+	}
+	if f.aiChatResult != nil {
+		return f.aiChatResult, nil
+	}
+	return &sandboxRuntimeAIChatResult{
+		Provider: "codex",
+		Stdout:   "I inspected the workspace from the sandbox.",
+		ExitCode: 0,
+	}, nil
+}
+
+func (f *fakeSandboxRuntime) SetTimeout(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) error {
+	f.lastAPIKey = apiKey
+	f.lastTimeoutSandboxID = sandboxID
+	f.lastTimeoutEndpoint = endpoint
+	f.lastTimeoutSeconds = timeoutSeconds
+	return nil
+}
+
+func (f *fakeSandboxRuntime) Pause(ctx context.Context, apiKey, sandboxID, endpoint string) error {
+	f.lastAPIKey = apiKey
+	f.lastPausedSandboxID = sandboxID
+	f.lastPauseEndpoint = endpoint
+	return nil
 }
 
 func pathJoin(basePath, name string) string {
@@ -268,6 +317,7 @@ func newTestController(t *testing.T) *Ctrl {
 		&entity.GitHubInstallation{},
 		&entity.GitHubRepository{},
 		&entity.Workspace{},
+		&entity.WorkspaceChatMessage{},
 		&entity.QiniuCredential{},
 		&entity.SandboxSession{},
 	); err != nil {

@@ -151,6 +151,28 @@ func (Workspace) TableName() string {
 	return "workspaces"
 }
 
+// WorkspaceChatMessage stores an AI Chat turn for a workspace.
+type WorkspaceChatMessage struct {
+	ID          string         `gorm:"column:id;primaryKey;size:64"                                                   json:"id"`
+	CreatedAt   time.Time      `gorm:"column:created_at;index"                                                        json:"created_at"`
+	UpdatedAt   time.Time      `gorm:"column:updated_at"                                                              json:"updated_at"`
+	DeletedAt   gorm.DeletedAt `gorm:"column:deleted_at;index"                                                        json:"deleted_at,omitempty"`
+	AccountID   string         `gorm:"column:account_id;size:64;not null;index"                                       json:"account_id"`
+	WorkspaceID string         `gorm:"column:workspace_id;size:64;not null;index:idx_workspace_chat_messages_scope"   json:"workspace_id"`
+	SandboxID   string         `gorm:"column:sandbox_id;size:255;index"                                               json:"sandbox_id,omitempty"`
+	Role        string         `gorm:"column:role;size:32;not null"                                                   json:"role"`
+	Content     string         `gorm:"column:content;type:text;not null"                                              json:"content"`
+	Provider    string         `gorm:"column:provider;size:32"                                                        json:"provider,omitempty"`
+	ExitCode    int            `gorm:"column:exit_code"                                                               json:"exit_code,omitempty"`
+	Workspace   Workspace      `gorm:"foreignKey:WorkspaceID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"            json:"-"`
+	Account     Account        `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"              json:"-"`
+}
+
+// TableName returns the database table name for WorkspaceChatMessage.
+func (WorkspaceChatMessage) TableName() string {
+	return "workspace_chat_messages"
+}
+
 // QiniuCredential stores encrypted Qiniu Cloud credentials for an account.
 type QiniuCredential struct {
 	ID                  string         `gorm:"column:id;primaryKey;size:64"                                      json:"id"`

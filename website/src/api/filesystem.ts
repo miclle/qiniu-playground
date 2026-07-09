@@ -27,3 +27,19 @@ export function sandboxFileContent(sandboxID: string, path: string) {
     responseType: 'blob',
   })
 }
+
+export function sandboxFilePreviewURL(sandboxID: string, path: string) {
+  return `/api/v1/sandboxes/${encodeURIComponent(sandboxID)}/preview${encodedPreviewPath(path)}`
+}
+
+export function workspaceFilePreviewURL(workspaceID: string, path: string) {
+  return `/api/v1/workspaces/${encodeURIComponent(workspaceID)}/preview${encodedPreviewPath(path)}`
+}
+
+function encodedPreviewPath(path: string) {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return normalizedPath
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+}

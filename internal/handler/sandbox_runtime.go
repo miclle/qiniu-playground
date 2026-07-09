@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +31,9 @@ type sandboxRuntime interface {
 	ListFiles(ctx context.Context, apiKey, sandboxID, endpoint, filePath string, depth uint32) ([]sandboxRuntimeFileEntry, error)
 	ReadFileStream(ctx context.Context, apiKey, sandboxID, endpoint, filePath string) (io.ReadCloser, error)
 	GetMetrics(ctx context.Context, apiKey, sandboxID, endpoint string, params sandboxMetricsParams) ([]sandboxRuntimeMetric, error)
+	RunAIChat(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeAIChatRequest) (*sandboxRuntimeAIChatResult, error)
+	SetTimeout(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) error
+	Pause(ctx context.Context, apiKey, sandboxID, endpoint string) error
 }
 
 type sandboxRuntimeTemplate struct {
@@ -65,6 +70,7 @@ type sandboxRuntimeRepositoryRequest struct {
 	Token          string
 	WorkspacePath  string
 	IDEPassword    string
+	Envs           map[string]string
 }
 
 type sandboxRuntimeWorkspaceRequest struct {
@@ -73,6 +79,7 @@ type sandboxRuntimeWorkspaceRequest struct {
 	Endpoint       string
 	WorkspacePath  string
 	IDEPassword    string
+	Envs           map[string]string
 }
 
 type sandboxRuntimeWorkspace struct {
@@ -116,6 +123,21 @@ type sandboxRuntimeMetric struct {
 	DiskUsed      int64     `json:"disk_used"`
 	Timestamp     time.Time `json:"timestamp"`
 	TimestampUnix int64     `json:"timestamp_unix"`
+}
+
+type sandboxRuntimeAIChatRequest struct {
+	WorkspacePath string
+	Prompt        string
+	Envs          map[string]string
+	Timeout       time.Duration
+}
+
+type sandboxRuntimeAIChatResult struct {
+	Provider string
+	Stdout   string
+	Stderr   string
+	Error    string
+	ExitCode int
 }
 
 type sandboxMetricsAPIError struct {
@@ -236,6 +258,18 @@ func (r *qiniuSandboxRuntime) Connect(ctx context.Context, apiKey, sandboxID str
 	return runtimeInfoFromSDK(sb, info), nil
 }
 
+func (r *qiniuSandboxRuntime) SetTimeout(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) error {
+	body, err := json.Marshal(map[string]int32{"timeout": timeoutSeconds})
+	if err != nil {
+		return err
+	}
+	return r.doSandboxControlRequest(ctx, apiKey, endpoint, sandboxID, "timeout", bytes.NewReader(body), "application/json")
+}
+
+func (r *qiniuSandboxRuntime) Pause(ctx context.Context, apiKey, sandboxID, endpoint string) error {
+	return r.doSandboxControlRequest(ctx, apiKey, endpoint, sandboxID, "pause", nil, "")
+}
+
 func (r *qiniuSandboxRuntime) PrepareWorkspace(ctx context.Context, apiKey string, req sandboxRuntimeWorkspaceRequest) (*sandboxRuntimeWorkspace, error) {
 	endpoint := r.endpoint
 	if req.Endpoint != "" {
@@ -256,10 +290,13 @@ func (r *qiniuSandboxRuntime) PrepareWorkspace(ctx context.Context, apiKey strin
 	if workspacePath == "" {
 		workspacePath = "/workspace"
 	}
+	if err := prepareRuntimeEnvironment(ctx, sb, req.Envs); err != nil {
+		return nil, err
+	}
 	if _, err := sb.Commands().Run(ctx, "mkdir -p "+shellQuote(workspacePath), qiniusb.WithTimeout(time.Minute)); err != nil {
 		return nil, fmt.Errorf("prepare workspace: %w", err)
 	}
-	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath, req.IDEPassword), qiniusb.WithTag("code-server")); err != nil {
+	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath, req.IDEPassword), qiniusb.WithTag("code-server"), qiniusb.WithEnvs(req.Envs)); err != nil {
 		return nil, err
 	}
 	info, err := sb.GetInfo(ctx)
@@ -297,10 +334,13 @@ func (r *qiniuSandboxRuntime) PrepareRepository(ctx context.Context, apiKey stri
 	if workspacePath == "" {
 		workspacePath = "/workspace/" + safeWorkspaceName(req.FullName)
 	}
+	if err := prepareRuntimeEnvironment(ctx, sb, req.Envs); err != nil {
+		return nil, err
+	}
 	if err := cloneOrUpdateRepository(ctx, sb, req, workspacePath); err != nil {
 		return nil, err
 	}
-	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath, req.IDEPassword), qiniusb.WithTag("code-server")); err != nil {
+	if _, err := sb.Commands().Start(ctx, codeServerCommand(workspacePath, req.IDEPassword), qiniusb.WithTag("code-server"), qiniusb.WithEnvs(req.Envs)); err != nil {
 		return nil, err
 	}
 	info, err := sb.GetInfo(ctx)
@@ -319,7 +359,7 @@ func (r *qiniuSandboxRuntime) PrepareRepository(ctx context.Context, apiKey stri
 }
 
 func (r *qiniuSandboxRuntime) StartPTY(ctx context.Context, apiKey, sandboxID string, endpoint string, size sandboxPTYSize, onData func([]byte)) (sandboxPTYSession, error) {
-	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, 120)
+	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, config.DefaultSandboxTimeoutSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +374,7 @@ func (r *qiniuSandboxRuntime) StartPTY(ctx context.Context, apiKey, sandboxID st
 }
 
 func (r *qiniuSandboxRuntime) ListFiles(ctx context.Context, apiKey, sandboxID, endpoint, filePath string, depth uint32) ([]sandboxRuntimeFileEntry, error) {
-	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, 120)
+	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, config.DefaultSandboxTimeoutSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +401,7 @@ func (r *qiniuSandboxRuntime) ListFiles(ctx context.Context, apiKey, sandboxID, 
 }
 
 func (r *qiniuSandboxRuntime) ReadFileStream(ctx context.Context, apiKey, sandboxID, endpoint, filePath string) (io.ReadCloser, error) {
-	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, 120)
+	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, config.DefaultSandboxTimeoutSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -370,6 +410,44 @@ func (r *qiniuSandboxRuntime) ReadFileStream(ctx context.Context, apiKey, sandbo
 
 func (r *qiniuSandboxRuntime) GetMetrics(ctx context.Context, apiKey, sandboxID, endpoint string, params sandboxMetricsParams) ([]sandboxRuntimeMetric, error) {
 	return r.getSandboxMetrics(ctx, apiKey, sandboxID, endpoint, params)
+}
+
+func (r *qiniuSandboxRuntime) RunAIChat(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeAIChatRequest) (*sandboxRuntimeAIChatResult, error) {
+	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, config.DefaultSandboxTimeoutSeconds)
+	if err != nil {
+		return nil, err
+	}
+	timeout := req.Timeout
+	if timeout == 0 {
+		timeout = 3 * time.Minute
+	}
+	envs := map[string]string{
+		"QINIU_PLAYGROUND_CHAT_PROMPT":         req.Prompt,
+		"QINIU_PLAYGROUND_CHAT_WORKSPACE_PATH": req.WorkspacePath,
+	}
+	for key, value := range req.Envs {
+		if value != "" {
+			envs[key] = value
+		}
+	}
+	command := aiChatCommand()
+	result, err := sb.Commands().Run(
+		ctx,
+		command,
+		qiniusb.WithTimeout(timeout),
+		qiniusb.WithEnvs(envs),
+	)
+	if err != nil {
+		return nil, err
+	}
+	provider := aiChatProviderFromOutput(result.Stdout)
+	return &sandboxRuntimeAIChatResult{
+		Provider: provider,
+		Stdout:   stripAIChatProviderMarker(result.Stdout),
+		Stderr:   result.Stderr,
+		Error:    result.Error,
+		ExitCode: result.ExitCode,
+	}, nil
 }
 
 func (r *qiniuSandboxRuntime) getSandboxMetrics(ctx context.Context, apiKey, sandboxID, endpoint string, params sandboxMetricsParams) ([]sandboxRuntimeMetric, error) {
@@ -410,11 +488,7 @@ func (r *qiniuSandboxRuntime) getSandboxMetrics(ctx context.Context, apiKey, san
 }
 
 func sandboxMetricsURL(endpoint, sandboxID string, params sandboxMetricsParams) (string, error) {
-	baseURL, err := url.Parse(endpoint)
-	if err != nil {
-		return "", err
-	}
-	metricsURL, err := baseURL.Parse("./sandboxes/" + url.PathEscape(sandboxID) + "/metrics")
+	metricsURL, err := sandboxControlURL(endpoint, sandboxID, "metrics")
 	if err != nil {
 		return "", err
 	}
@@ -427,6 +501,50 @@ func sandboxMetricsURL(endpoint, sandboxID string, params sandboxMetricsParams) 
 	}
 	metricsURL.RawQuery = values.Encode()
 	return metricsURL.String(), nil
+}
+
+func (r *qiniuSandboxRuntime) doSandboxControlRequest(ctx context.Context, apiKey, endpoint, sandboxID, action string, body io.Reader, contentType string) error {
+	if endpoint == "" {
+		endpoint = r.endpoint
+	}
+	requestURL, err := sandboxControlURL(endpoint, sandboxID, action)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if id, ok := reqid.ReqidFromContext(ctx); ok {
+		req.Header.Set("X-Reqid", id)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := sandboxMetricsHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return &sandboxMetricsAPIError{StatusCode: resp.StatusCode, Body: responseBody, Reqid: resp.Header.Get("X-Reqid")}
+	}
+	return nil
+}
+
+func sandboxControlURL(endpoint, sandboxID, action string) (*url.URL, error) {
+	baseURL, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return baseURL.Parse("./sandboxes/" + url.PathEscape(sandboxID) + "/" + strings.TrimLeft(action, "/"))
 }
 
 func (r *qiniuSandboxRuntime) connectSandbox(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) (*qiniusb.Sandbox, error) {
@@ -479,6 +597,82 @@ func cloneOrUpdateRepository(ctx context.Context, sb *qiniusb.Sandbox, req sandb
 		return fmt.Errorf("clone repository: %w", err)
 	}
 	return nil
+}
+
+func prepareRuntimeEnvironment(ctx context.Context, sb *qiniusb.Sandbox, envs map[string]string) error {
+	if len(envs) == 0 {
+		return nil
+	}
+	command := strings.Join([]string{
+		"set -e",
+		"mkdir -p ~/.config/qiniu-playground",
+		": > ~/.config/qiniu-playground/env",
+		shellExportCommands(envs, "~/.config/qiniu-playground/env"),
+		"chmod 600 ~/.config/qiniu-playground/env",
+		`grep -Fq 'qiniu-playground/env' ~/.profile 2>/dev/null || printf '\n[ -f "$HOME/.config/qiniu-playground/env" ] && . "$HOME/.config/qiniu-playground/env"\n' >> ~/.profile`,
+	}, "\n")
+	if _, err := sb.Commands().Run(ctx, command, qiniusb.WithTimeout(time.Minute), qiniusb.WithEnvs(envs)); err != nil {
+		return fmt.Errorf("prepare runtime environment: %w", err)
+	}
+	return nil
+}
+
+func shellExportCommands(envs map[string]string, targetPath string) string {
+	names := make([]string, 0, len(envs))
+	for name := range envs {
+		if envs[name] == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	pattern := strings.Join(names, "|")
+	return fmt.Sprintf("export -p | grep -E '^(export |declare -x )?(%s)=' > %s", pattern, targetPath)
+}
+
+func aiChatCommand() string {
+	return strings.Join([]string{
+		"set -u",
+		`workspace_path="${QINIU_PLAYGROUND_CHAT_WORKSPACE_PATH:-}"`,
+		`if [ -n "$workspace_path" ] && [ -d "$workspace_path" ]; then cd "$workspace_path"; elif [ -d /home/user ]; then cd /home/user; elif [ -d /workspace ]; then cd /workspace; fi`,
+		"if command -v claude >/dev/null 2>&1; then",
+		"printf '__qiniu_playground_provider__:claude\\n'",
+		`claude --print --bare --dangerously-skip-permissions -- "$QINIU_PLAYGROUND_CHAT_PROMPT" 2>&1`,
+		"elif command -v codex >/dev/null 2>&1; then",
+		"printf '__qiniu_playground_provider__:codex\\n'",
+		`codex exec --skip-git-repo-check -- "$QINIU_PLAYGROUND_CHAT_PROMPT" 2>&1`,
+		"else",
+		`printf 'Neither claude nor codex CLI is available in this sandbox.\n'`,
+		"exit 127",
+		"fi",
+	}, "\n")
+}
+
+func aiChatProviderFromOutput(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		switch strings.TrimSpace(line) {
+		case "__qiniu_playground_provider__:codex":
+			return "codex"
+		case "__qiniu_playground_provider__:claude":
+			return "claude"
+		}
+	}
+	return ""
+}
+
+func stripAIChatProviderMarker(output string) string {
+	lines := strings.Split(output, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "__qiniu_playground_provider__:") {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return strings.TrimSpace(strings.Join(filtered, "\n"))
 }
 
 func cloneOrUpdateRepositoryCommand(req sandboxRuntimeRepositoryRequest, workspacePath string) string {

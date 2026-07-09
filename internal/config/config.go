@@ -10,6 +10,9 @@ import (
 	"github.com/spf13/viper"
 )
 
+// DefaultSandboxTimeoutSeconds is the default sandbox TTL. It is refreshed by workspace heartbeats.
+const DefaultSandboxTimeoutSeconds int32 = 24 * 60 * 60
+
 // Config represents the application configuration.
 type Config struct {
 	Addr    string        `mapstructure:"addr"`   // listen address, e.g. "0.0.0.0:19090"
@@ -84,7 +87,7 @@ func Load(path string) (*Config, error) {
 		cfg.Sandbox.DefaultTemplateID = "base"
 	}
 	if cfg.Sandbox.DefaultTimeoutSeconds == 0 {
-		cfg.Sandbox.DefaultTimeoutSeconds = 120
+		cfg.Sandbox.DefaultTimeoutSeconds = DefaultSandboxTimeoutSeconds
 	}
 
 	return &cfg, nil

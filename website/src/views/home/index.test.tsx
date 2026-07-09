@@ -38,6 +38,15 @@ let sandboxFixtures: Array<{
   region?: string
   metadata?: Record<string, string>
 }> = []
+let templateFixtures: Array<{
+  template_id: string
+  aliases?: string[]
+  cpu_count?: number
+  memory_mb?: number
+  disk_size_mb?: number
+}> = []
+
+const createWorkspaceMock = vi.hoisted(() => vi.fn())
 
 vi.mock('src/api/auth', () => ({
   currentUser: () => apiResponse({
@@ -75,12 +84,12 @@ vi.mock('src/api/sandboxes', () => ({
 }))
 
 vi.mock('src/api/templates', () => ({
-  sandboxTemplates: () => apiResponse({ default_template_id: '', templates: [] }),
+  sandboxTemplates: () => apiResponse({ default_template_id: templateFixtures[0]?.template_id || '', templates: templateFixtures }),
 }))
 
 vi.mock('src/api/workspaces', () => ({
   workspaces: () => apiResponse({ workspaces: workspaceFixtures }),
-  createWorkspace: vi.fn(),
+  createWorkspace: createWorkspaceMock,
 }))
 
 async function waitFor(assertion: () => void) {
@@ -104,6 +113,15 @@ beforeEach(() => {
   queryClient.clear()
   workspaceFixtures = []
   sandboxFixtures = []
+  templateFixtures = []
+  createWorkspaceMock.mockReset()
+  createWorkspaceMock.mockImplementation(() => apiResponse({
+    id: 'wks_new',
+    name: 'Scratch',
+    region: 'https://cn-yangzhou-1-sandbox.qiniuapi.com',
+    sandbox_id: 'sandbox-new',
+    template_id: 'tmpl_playground',
+  }))
   document.body.innerHTML = ''
 })
 
@@ -135,6 +153,64 @@ test('shows GitHub App setup prompt only inside create workspace dialog', async 
   })
 
   expect(document.body.textContent).toContain('Configure GitHub App to choose repositories for new workspaces.')
+})
+
+test('shows a sandbox creation overlay while a new workspace is being created', async () => {
+  templateFixtures = [
+    {
+      template_id: 'tmpl_playground',
+      aliases: ['playground'],
+      cpu_count: 4,
+      memory_mb: 8192,
+      disk_size_mb: 20480,
+    },
+  ]
+  createWorkspaceMock.mockImplementation(() => new Promise(() => {}))
+
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <Home page="workspaces" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('New workspace')
+  })
+
+  const newWorkspaceButton = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === 'New workspace'
+  ))
+  expect(newWorkspaceButton).toBeTruthy()
+
+  await act(async () => {
+    newWorkspaceButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+
+  let createForm: HTMLFormElement | null = null
+  await waitFor(() => {
+    expect(document.body.textContent).toContain('Create workspace')
+    expect(document.body.textContent).toContain('playground')
+    createForm = document.body.querySelector('form')
+    expect(createForm).toBeTruthy()
+  })
+
+  await act(async () => {
+    createForm?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  })
+
+  await waitFor(() => {
+    expect(document.body.textContent).toContain('Creating sandbox')
+  })
+
+  expect(document.body.textContent).toContain('Preparing the runtime and workspace files.')
 })
 
 test('renders workspace rows as detail links with timestamps and no action buttons', async () => {
