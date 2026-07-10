@@ -5,7 +5,7 @@ import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import type { ConnectWorkspaceOptions, Workspace } from 'src/api/workspaces'
-import type { WorkspaceChatMessage } from 'src/api/workspace-chat'
+import type { WorkspaceChatMessage, WorkspaceChatStreamHandlers } from 'src/api/workspace-chat'
 import type { SandboxFileEntry } from 'src/api/filesystem'
 import type { SandboxMetric } from 'src/api/sandboxes'
 import { queryClient } from 'src/lib/query-client'
@@ -149,24 +149,28 @@ const fetchWorkspaceChatMessages = vi.fn<(
   ] satisfies WorkspaceChatMessage[],
 }))
 
-const sendWorkspaceChatMessage = vi.fn((
+const streamWorkspaceChatMessage = vi.fn(async (
   workspaceID: string,
   message: string,
-) => apiResponse({
-  user_message: {
+  handlers: WorkspaceChatStreamHandlers = {},
+) => {
+  handlers.onUserMessage?.({
     id: 'msg_2',
     created_at: '2026-07-07T10:01:00Z',
     role: 'user',
     content: message,
-  } satisfies WorkspaceChatMessage,
-  assistant_message: {
+  } satisfies WorkspaceChatMessage)
+  handlers.onStatus?.('Running AI Chat in the sandbox...')
+  handlers.onAssistantDelta?.('Sandbox answer ')
+  handlers.onAssistantDelta?.(`for ${workspaceID}`)
+  handlers.onAssistantMessage?.({
     id: 'msg_3',
     created_at: '2026-07-07T10:01:01Z',
     role: 'assistant',
     content: `Sandbox answer for ${workspaceID}`,
     provider: 'codex',
-  } satisfies WorkspaceChatMessage,
-}))
+  } satisfies WorkspaceChatMessage)
+})
 
 vi.mock('src/api/workspaces', () => ({
   workspaces: () => fetchWorkspaces(),
@@ -181,7 +185,11 @@ vi.mock('src/api/qiniu', () => ({
 
 vi.mock('src/api/workspace-chat', () => ({
   workspaceChatMessages: (workspaceID: string) => fetchWorkspaceChatMessages(workspaceID),
-  sendWorkspaceChatMessage: (workspaceID: string, message: string) => sendWorkspaceChatMessage(workspaceID, message),
+  streamWorkspaceChatMessage: (
+    workspaceID: string,
+    message: string,
+    handlers?: WorkspaceChatStreamHandlers,
+  ) => streamWorkspaceChatMessage(workspaceID, message, handlers),
 }))
 
 vi.mock('src/api/filesystem', () => ({
@@ -308,22 +316,25 @@ beforeEach(() => {
       },
     ] satisfies WorkspaceChatMessage[],
   }))
-  sendWorkspaceChatMessage.mockReset()
-  sendWorkspaceChatMessage.mockImplementation((workspaceID, message) => apiResponse({
-    user_message: {
+  streamWorkspaceChatMessage.mockReset()
+  streamWorkspaceChatMessage.mockImplementation(async (workspaceID, message, handlers = {}) => {
+    handlers.onUserMessage?.({
       id: 'msg_2',
       created_at: '2026-07-07T10:01:00Z',
       role: 'user',
       content: message,
-    } satisfies WorkspaceChatMessage,
-    assistant_message: {
+    } satisfies WorkspaceChatMessage)
+    handlers.onStatus?.('Running AI Chat in the sandbox...')
+    handlers.onAssistantDelta?.('Sandbox answer ')
+    handlers.onAssistantDelta?.(`for ${workspaceID}`)
+    handlers.onAssistantMessage?.({
       id: 'msg_3',
       created_at: '2026-07-07T10:01:01Z',
       role: 'assistant',
       content: `Sandbox answer for ${workspaceID}`,
       provider: 'codex',
-    } satisfies WorkspaceChatMessage,
-  }))
+    } satisfies WorkspaceChatMessage)
+  })
   window.URL.createObjectURL = vi.fn(() => 'blob:download')
   window.URL.revokeObjectURL = vi.fn()
   HTMLAnchorElement.prototype.click = vi.fn()
@@ -484,10 +495,25 @@ test('renders AI Chat messages as Markdown', async () => {
   fetchWorkspaceChatMessages.mockImplementationOnce(() => apiResponse({
     messages: [
       {
+        id: 'msg_user',
+        created_at: '2026-07-07T09:59:00Z',
+        role: 'user',
+        content: '在浏览器中打开这个 /home/user/snake.html 文件',
+      },
+      {
         id: 'msg_markdown',
         created_at: '2026-07-07T10:00:00Z',
         role: 'assistant',
-        content: 'Done. Created `/home/user/snake.html`.\n\n**How to play:**\n- Open it in a browser',
+        content: [
+          'Done. Created `/home/user/snake.html`.',
+          '',
+          '**How to play:**',
+          '- Open it in a browser',
+          '',
+          '| Error | Real cause | Fixable in snake.html? |',
+          '| --- | --- | --- |',
+          '| CSP block | Preview proxy sets connect-src none | No |',
+        ].join('\n'),
         provider: 'claude',
       },
     ] satisfies WorkspaceChatMessage[],
@@ -515,9 +541,21 @@ test('renders AI Chat messages as Markdown', async () => {
 
   expect(container.textContent).not.toContain('`/home/user/snake.html`')
   expect(container.textContent).not.toContain('**How to play:**')
+  expect(container.textContent).not.toContain('| Error | Real cause | Fixable in snake.html? |')
   expect(container.querySelector('code')?.textContent).toBe('/home/user/snake.html')
   expect(container.querySelector('strong')?.textContent).toBe('How to play:')
   expect(container.querySelector('li')?.textContent).toBe('Open it in a browser')
+  expect(container.querySelector('table')).toBeTruthy()
+  expect(container.querySelectorAll('th')).toHaveLength(3)
+  expect(container.querySelector('th')?.textContent).toBe('Error')
+  expect(container.querySelector('td')?.textContent).toBe('CSP block')
+
+  const userBubble = Array.from(container.querySelectorAll('[data-chat-role="user"]')).find((element) => (
+    element.textContent?.includes('在浏览器中打开这个 /home/user/snake.html 文件')
+  ))
+  expect(userBubble?.parentElement?.className).toContain('justify-end')
+  expect(userBubble?.className).toContain('w-fit')
+  expect(userBubble?.className).toContain('max-w-[calc(100%-2rem)]')
 })
 
 test('resizes workspace columns with a 300px minimum', async () => {
@@ -665,6 +703,14 @@ test('pauses active workspace sandboxes when leaving the detail route', async ()
 
 test('sends AI Chat messages through the workspace chat API', async () => {
   fetchWorkspaceChatMessages.mockImplementation(() => apiResponse({ messages: [] }))
+  let streamHandlers: WorkspaceChatStreamHandlers | undefined
+  let resolveStream = () => {}
+  streamWorkspaceChatMessage.mockImplementationOnce(async (_, __, handlers = {}) => {
+    streamHandlers = handlers
+    await new Promise<void>((resolve) => {
+      resolveStream = resolve
+    })
+  })
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -703,31 +749,151 @@ test('sends AI Chat messages through the workspace chat API', async () => {
     sendButton?.click()
   })
 
-  expect(sendWorkspaceChatMessage).toHaveBeenCalledWith('wks_123', 'List the project files')
+  expect(streamWorkspaceChatMessage).toHaveBeenCalledWith('wks_123', 'List the project files', expect.any(Object))
+  expect(streamHandlers?.signal).toBeInstanceOf(AbortSignal)
+  expect(container.textContent).toContain('List the project files')
+
+  await act(async () => {
+    streamHandlers?.onStatus?.('Running AI Chat in the sandbox...')
+    streamHandlers?.onAssistantDelta?.('Sandbox answer ')
+    streamHandlers?.onAssistantDelta?.('for wks_123')
+    streamHandlers?.onUserMessage?.({
+      id: 'msg_2',
+      created_at: '2026-07-07T10:01:00Z',
+      role: 'user',
+      content: 'List the project files',
+    })
+    streamHandlers?.onAssistantMessage?.({
+      id: 'msg_3',
+      created_at: '2026-07-07T10:01:01Z',
+      role: 'assistant',
+      content: 'Sandbox answer for wks_123',
+      provider: 'codex',
+    })
+    resolveStream()
+  })
+
   await waitFor(() => {
-    expect(container.textContent).toContain('List the project files')
+    expect(container.textContent).not.toContain('Execution')
+    expect(container.textContent).not.toContain('Prepared workspace context.')
+    expect(container.textContent).not.toContain('Ran AI Chat in the sandbox with codex.')
     expect(container.textContent).toContain('Sandbox answer for wks_123')
+  })
+})
+
+test('aborts an active AI Chat stream on unmount', async () => {
+  fetchWorkspaceChatMessages.mockImplementation(() => apiResponse({ messages: [] }))
+  let streamHandlers: WorkspaceChatStreamHandlers | undefined
+  streamWorkspaceChatMessage.mockImplementationOnce(async (_, __, handlers = {}) => {
+    streamHandlers = handlers
+    await new Promise<void>(() => {})
+  })
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Ready to work in VisionTube')
+  })
+
+  const textarea = container.querySelector('textarea[aria-label="Message AI Chat"]') as HTMLTextAreaElement | null
+  const sendButton = container.querySelector('button[aria-label="Send message"]') as HTMLButtonElement | null
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+
+  await act(async () => {
+    if (textarea) {
+      valueSetter?.call(textarea, 'Keep working')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+  })
+
+  await act(async () => {
+    sendButton?.click()
+  })
+
+  expect(streamHandlers?.signal?.aborted).toBe(false)
+
+  await act(async () => {
+    root.unmount()
+  })
+
+  expect(streamHandlers?.signal?.aborted).toBe(true)
+})
+
+test('removes optimistic AI Chat messages when the stream fails before persistence', async () => {
+  fetchWorkspaceChatMessages.mockImplementation(() => apiResponse({ messages: [] }))
+  streamWorkspaceChatMessage.mockRejectedValueOnce(new Error('Failed to save chat message.'))
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Ready to work in VisionTube')
+  })
+
+  const textarea = container.querySelector('textarea[aria-label="Message AI Chat"]') as HTMLTextAreaElement | null
+  const sendButton = container.querySelector('button[aria-label="Send message"]') as HTMLButtonElement | null
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+
+  await act(async () => {
+    if (textarea) {
+      valueSetter?.call(textarea, 'Will fail')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+  })
+
+  await act(async () => {
+    sendButton?.click()
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('Failed to save chat message.')
+    expect(container.textContent).not.toContain('Will fail')
   })
 })
 
 test('keeps transient AI Chat runtime errors visible in the chat panel', async () => {
   fetchWorkspaceChatMessages.mockImplementation(() => apiResponse({ messages: [] }))
-  sendWorkspaceChatMessage.mockImplementation((_, message) => apiResponse({
-    user_message: {
+  streamWorkspaceChatMessage.mockImplementation(async (_, message, handlers = {}) => {
+    handlers.onUserMessage?.({
       id: 'temp-user-1',
       created_at: '2026-07-07T10:01:00Z',
       role: 'user',
       content: message,
-    } satisfies WorkspaceChatMessage,
-    assistant_message: {
+    } satisfies WorkspaceChatMessage)
+    handlers.onAssistantMessage?.({
       id: 'temp-assistant-1',
       created_at: '2026-07-07T10:01:01Z',
       role: 'assistant',
       content: 'AI Chat failed before the sandbox command completed: sandbox timed out',
       provider: 'codex',
       exit_code: -1,
-    } satisfies WorkspaceChatMessage,
-  }))
+    } satisfies WorkspaceChatMessage)
+  })
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -810,12 +976,12 @@ test('sends AI Chat messages with Enter and keeps Shift Enter for multiline edit
     }))
   })
 
-  expect(sendWorkspaceChatMessage).toHaveBeenCalledWith('wks_123', 'Write a plan')
+  expect(streamWorkspaceChatMessage).toHaveBeenCalledWith('wks_123', 'Write a plan', expect.any(Object))
 
   await waitFor(() => {
     expect((textarea as HTMLTextAreaElement).value).toBe('')
   })
-  sendWorkspaceChatMessage.mockClear()
+  streamWorkspaceChatMessage.mockClear()
 
   await act(async () => {
     if (textarea) {
@@ -836,7 +1002,7 @@ test('sends AI Chat messages with Enter and keeps Shift Enter for multiline edit
   })
 
   expect(shiftEnterEvent.defaultPrevented).toBe(false)
-  expect(sendWorkspaceChatMessage).not.toHaveBeenCalled()
+  expect(streamWorkspaceChatMessage).not.toHaveBeenCalled()
 })
 
 test('reminds users to configure MAAS before using AI Chat', async () => {

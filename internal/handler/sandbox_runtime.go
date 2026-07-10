@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qiniu/go-sdk/v7/reqid"
@@ -130,6 +131,7 @@ type sandboxRuntimeAIChatRequest struct {
 	Prompt        string
 	Envs          map[string]string
 	Timeout       time.Duration
+	OnOutput      func(string)
 }
 
 type sandboxRuntimeAIChatResult struct {
@@ -137,6 +139,7 @@ type sandboxRuntimeAIChatResult struct {
 	Stdout   string
 	Stderr   string
 	Error    string
+	Thought  string
 	ExitCode int
 }
 
@@ -431,12 +434,20 @@ func (r *qiniuSandboxRuntime) RunAIChat(ctx context.Context, apiKey, sandboxID, 
 		}
 	}
 	command := aiChatCommand()
+	outputFilter := newAIChatOutputFilter(req.OnOutput)
 	result, err := sb.Commands().Run(
 		ctx,
 		command,
 		qiniusb.WithTimeout(timeout),
 		qiniusb.WithEnvs(envs),
+		qiniusb.WithOnStdout(func(data []byte) {
+			outputFilter.WriteStdout(data)
+		}),
+		qiniusb.WithOnStderr(func(data []byte) {
+			outputFilter.WriteStderr(data)
+		}),
 	)
+	outputFilter.Flush()
 	if err != nil {
 		return nil, err
 	}
@@ -448,6 +459,134 @@ func (r *qiniuSandboxRuntime) RunAIChat(ctx context.Context, apiKey, sandboxID, 
 		Error:    result.Error,
 		ExitCode: result.ExitCode,
 	}, nil
+}
+
+type aiChatOutputFilter struct {
+	mu              sync.Mutex
+	onOutput        func(string)
+	providerChecked bool
+	prefix          []byte
+	stdoutPending   []byte
+	stderrPending   []byte
+}
+
+func newAIChatOutputFilter(onOutput func(string)) *aiChatOutputFilter {
+	return &aiChatOutputFilter{onOutput: onOutput}
+}
+
+func (f *aiChatOutputFilter) WriteStdout(chunk []byte) {
+	if f.onOutput == nil || len(chunk) == 0 {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.providerChecked {
+		f.emitStdout(chunk)
+		return
+	}
+	f.prefix = append(f.prefix, chunk...)
+	const maxAIChatProviderMarkerLen = 64
+	if len(f.prefix) >= maxAIChatProviderMarkerLen &&
+		!bytes.HasPrefix(bytes.TrimSpace(f.prefix), []byte("__qiniu_playground_provider__:")) {
+		f.providerChecked = true
+		f.emitStdout(f.prefix)
+		f.prefix = nil
+		return
+	}
+	index := bytes.IndexByte(f.prefix, '\n')
+	if index < 0 {
+		return
+	}
+	f.providerChecked = true
+	line := append([]byte(nil), f.prefix[:index]...)
+	rest := append([]byte(nil), f.prefix[index+1:]...)
+	f.prefix = nil
+	if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("__qiniu_playground_provider__:")) {
+		line = append(line, '\n')
+		f.emitStdout(line)
+	}
+	if len(rest) > 0 {
+		f.emitStdout(rest)
+	}
+}
+
+func (f *aiChatOutputFilter) WriteStderr(chunk []byte) {
+	if f.onOutput == nil || len(chunk) == 0 {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.emitStderr(chunk)
+}
+
+func (f *aiChatOutputFilter) Flush() {
+	if f.onOutput == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.providerChecked && len(f.prefix) > 0 {
+		f.providerChecked = true
+		line := f.prefix
+		f.prefix = nil
+		if !bytes.HasPrefix(bytes.TrimSpace(line), []byte("__qiniu_playground_provider__:")) {
+			f.emitStdout(line)
+		}
+	}
+	if len(f.stdoutPending) > 0 {
+		f.onOutput(string(f.stdoutPending))
+		f.stdoutPending = nil
+	}
+	if len(f.stderrPending) > 0 {
+		f.onOutput(string(f.stderrPending))
+		f.stderrPending = nil
+	}
+}
+
+func (f *aiChatOutputFilter) emitStdout(chunk []byte) {
+	f.emitUTF8(chunk, &f.stdoutPending)
+}
+
+func (f *aiChatOutputFilter) emitStderr(chunk []byte) {
+	f.emitUTF8(chunk, &f.stderrPending)
+}
+
+func (f *aiChatOutputFilter) emitUTF8(chunk []byte, pending *[]byte) {
+	data := append(*pending, chunk...)
+	complete, rest := splitCompleteUTF8(data)
+	if len(complete) > 0 {
+		f.onOutput(string(complete))
+	}
+	*pending = append((*pending)[:0], rest...)
+}
+
+func splitCompleteUTF8(data []byte) ([]byte, []byte) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	for offset := 1; offset <= 3; offset++ {
+		index := len(data) - offset
+		if index < 0 {
+			break
+		}
+		value := data[index]
+		if value >= 0xC0 {
+			expectedLen := 2
+			if value >= 0xF0 {
+				expectedLen = 4
+			} else if value >= 0xE0 {
+				expectedLen = 3
+			}
+			if offset < expectedLen {
+				return data[:index], data[index:]
+			}
+			break
+		}
+		if value < 0x80 {
+			break
+		}
+	}
+	return data, nil
 }
 
 func (r *qiniuSandboxRuntime) getSandboxMetrics(ctx context.Context, apiKey, sandboxID, endpoint string, params sandboxMetricsParams) ([]sandboxRuntimeMetric, error) {

@@ -63,6 +63,7 @@ type fakeSandboxRuntime struct {
 	aiChatResult           *sandboxRuntimeAIChatResult
 	aiChatErr              error
 	aiChatNilResult        bool
+	aiChatOutputChunks     []string
 }
 
 type fakePTYSession struct {
@@ -228,6 +229,11 @@ func (f *fakeSandboxRuntime) RunAIChat(ctx context.Context, apiKey, sandboxID, e
 	f.lastAIChatRequest = req
 	if f.aiChatErr != nil {
 		return nil, f.aiChatErr
+	}
+	for _, chunk := range f.aiChatOutputChunks {
+		if req.OnOutput != nil {
+			req.OnOutput(chunk)
+		}
 	}
 	if f.aiChatNilResult {
 		return nil, nil

@@ -162,6 +162,7 @@ type WorkspaceChatMessage struct {
 	SandboxID   string         `gorm:"column:sandbox_id;size:255;index"                                               json:"sandbox_id,omitempty"`
 	Role        string         `gorm:"column:role;size:32;not null"                                                   json:"role"`
 	Content     string         `gorm:"column:content;type:text;not null"                                              json:"content"`
+	Thought     string         `gorm:"column:thought;type:text"                                                       json:"thought,omitempty"`
 	Provider    string         `gorm:"column:provider;size:32"                                                        json:"provider,omitempty"`
 	ExitCode    int            `gorm:"column:exit_code"                                                               json:"exit_code,omitempty"`
 	Workspace   Workspace      `gorm:"foreignKey:WorkspaceID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"            json:"-"`

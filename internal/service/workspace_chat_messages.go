@@ -21,6 +21,7 @@ type WorkspaceChatMessageInput struct {
 	SandboxID   string
 	Role        string
 	Content     string
+	Thought     string
 	Provider    string
 	ExitCode    int
 }
@@ -51,6 +52,7 @@ func (s *Service) SaveWorkspaceChatMessage(ctx context.Context, accountID string
 		SandboxID:   input.SandboxID,
 		Role:        input.Role,
 		Content:     content,
+		Thought:     strings.TrimSpace(input.Thought),
 		Provider:    input.Provider,
 		ExitCode:    input.ExitCode,
 	}

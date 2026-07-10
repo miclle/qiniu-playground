@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -123,6 +124,69 @@ func TestStripAIChatProviderMarker(t *testing.T) {
 	}
 	if provider := aiChatProviderFromOutput("__qiniu_playground_provider__:claude\nhello\n"); provider != "claude" {
 		t.Fatalf("provider = %q, want claude", provider)
+	}
+}
+
+func TestAIChatOutputFilterPreservesUTF8AcrossChunks(t *testing.T) {
+	var got strings.Builder
+	filter := newAIChatOutputFilter(func(delta string) {
+		got.WriteString(delta)
+	})
+	message := []byte("你好，世界")
+
+	filter.WriteStdout([]byte("__qiniu_playground_provider__:codex\n"))
+	filter.WriteStdout(message[:1])
+	filter.WriteStdout(message[1:5])
+	filter.WriteStdout(message[5:])
+	filter.Flush()
+
+	if got.String() != "你好，世界" {
+		t.Fatalf("streamed output = %q, want UTF-8 preserved", got.String())
+	}
+}
+
+func TestAIChatOutputFilterFlushesOutputWithoutProviderNewline(t *testing.T) {
+	var got strings.Builder
+	filter := newAIChatOutputFilter(func(delta string) {
+		got.WriteString(delta)
+	})
+
+	filter.WriteStdout([]byte("short answer"))
+	filter.Flush()
+
+	if got.String() != "short answer" {
+		t.Fatalf("streamed output = %q, want un-newline-terminated output", got.String())
+	}
+}
+
+func TestAIChatOutputFilterStreamsLongFirstLineWithoutProviderMarker(t *testing.T) {
+	var got strings.Builder
+	filter := newAIChatOutputFilter(func(delta string) {
+		got.WriteString(delta)
+	})
+
+	filter.WriteStdout([]byte(strings.Repeat("a", 64)))
+
+	if got.String() != strings.Repeat("a", 64) {
+		t.Fatalf("streamed output = %q, want long first line emitted without waiting for newline", got.String())
+	}
+}
+
+func TestAIChatOutputFilterPreservesTrailingUTF8AfterInvalidBytes(t *testing.T) {
+	var got []byte
+	filter := newAIChatOutputFilter(func(delta string) {
+		got = append(got, []byte(delta)...)
+	})
+	message := []byte("你")
+
+	filter.WriteStdout([]byte("__qiniu_playground_provider__:codex\n"))
+	filter.WriteStdout(append([]byte{0xff}, message[:1]...))
+	filter.WriteStdout(message[1:])
+	filter.Flush()
+
+	want := append([]byte{0xff}, message...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("streamed bytes = %v, want invalid prefix plus complete UTF-8 bytes %v", got, want)
 	}
 }
 

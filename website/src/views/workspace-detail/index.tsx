@@ -8,6 +8,7 @@ import { AxisPointerComponent, GridComponent, TooltipComponent } from 'echarts/c
 import { SVGRenderer } from 'echarts/renderers'
 import type { ECharts, EChartsCoreOption } from 'echarts/core'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   Activity,
   AlertTriangle,
@@ -32,7 +33,7 @@ import {
 import { Link, useParams } from 'react-router-dom'
 
 import { qiniuCredentialStatus } from 'src/api/qiniu'
-import { sendWorkspaceChatMessage, workspaceChatMessages } from 'src/api/workspace-chat'
+import { streamWorkspaceChatMessage, workspaceChatMessages } from 'src/api/workspace-chat'
 import type { WorkspaceChatMessage } from 'src/api/workspace-chat'
 import {
   connectWorkspace,
@@ -213,9 +214,14 @@ function chatErrorMessage(error: unknown) {
   return connectionErrorMessage(error) || 'Unable to send this message.'
 }
 
+function isAbortError(error: unknown) {
+  return (error as { name?: string } | undefined)?.name === 'AbortError'
+}
+
 function ChatMarkdown({ content }: { content: string }) {
   return (
     <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
       components={{
         a: ({ children, href }) => (
           <a className="font-medium underline underline-offset-3" href={href} target="_blank" rel="noreferrer">
@@ -244,6 +250,17 @@ function ChatMarkdown({ content }: { content: string }) {
           </pre>
         ),
         strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+        table: ({ children }) => (
+          <div className="my-2 overflow-x-auto rounded-md border">
+            <table className="w-full min-w-max border-collapse text-left text-xs">
+              {children}
+            </table>
+          </div>
+        ),
+        tbody: ({ children }) => <tbody className="divide-y">{children}</tbody>,
+        td: ({ children }) => <td className="border-r px-2 py-1.5 align-top last:border-r-0">{children}</td>,
+        th: ({ children }) => <th className="border-r bg-muted/50 px-2 py-1.5 font-semibold align-top last:border-r-0">{children}</th>,
+        thead: ({ children }) => <thead className="border-b">{children}</thead>,
         ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
       }}
     >
@@ -631,9 +648,14 @@ function WorkspaceDetail() {
   const [assistantSidebarResizing, setAssistantSidebarResizing] = useState(false)
   const [workspaceLayoutWidth, setWorkspaceLayoutWidth] = useState(0)
   const [chatMessage, setChatMessage] = useState('')
+  const [chatStreaming, setChatStreaming] = useState(false)
+  const [chatStreamError, setChatStreamError] = useState('')
+  const [chatStreamStatus, setChatStreamStatus] = useState('')
+  const [chatStreamingContent, setChatStreamingContent] = useState('')
   const previousWorkspaceIDRef = useRef<string | undefined>(undefined)
   const workspaceLayoutRef = useRef<HTMLDivElement | null>(null)
   const chatContainerRef = useRef<HTMLDivElement | null>(null)
+  const chatAbortControllerRef = useRef<AbortController | null>(null)
   const workspaceActivityRef = useRef({
     pauseRequested: false,
     sandboxID: '',
@@ -699,35 +721,67 @@ function WorkspaceDetail() {
     enabled: Boolean(workspaceId),
     retry: false,
   })
-  const chatMutation = useMutation({
-    mutationFn: (message: string) => {
-      if (!workspaceId) {
-        throw new Error('workspace id is required')
+  const appendChatMessages = (...messages: WorkspaceChatMessage[]) => {
+    queryClient.setQueryData<{ data: { messages: WorkspaceChatMessage[] } }>(['workspace-chat', workspaceId], (current) => {
+      if (!current) {
+        return { data: { messages } }
       }
-      return sendWorkspaceChatMessage(workspaceId, message)
-    },
-    onSuccess: (response) => {
-      setChatMessage('')
-      queryClient.setQueryData<{ data: { messages: WorkspaceChatMessage[] } }>(['workspace-chat', workspaceId], (current) => {
-        const responseMessages = [response.data.user_message, response.data.assistant_message]
-        if (!current) {
-          return { data: { messages: responseMessages } }
+      const nextMessages = [...current.data.messages]
+      for (const message of messages) {
+        const existingIndex = nextMessages.findIndex((item) => item.id === message.id)
+        if (existingIndex >= 0) {
+          nextMessages[existingIndex] = message
+        } else {
+          nextMessages.push(message)
         }
-        const existingIDs = new Set(current.data.messages.map((message: WorkspaceChatMessage) => message.id))
+      }
+      return {
+        ...current,
+        data: {
+          ...current.data,
+          messages: nextMessages,
+        },
+      }
+    })
+  }
+  const replaceChatMessage = (replaceID: string, message: WorkspaceChatMessage) => {
+    queryClient.setQueryData<{ data: { messages: WorkspaceChatMessage[] } }>(['workspace-chat', workspaceId], (current) => {
+      if (!current) {
+        return { data: { messages: [message] } }
+      }
+      const existingIndex = current.data.messages.findIndex((item) => item.id === replaceID || item.id === message.id)
+      if (existingIndex === -1) {
         return {
           ...current,
           data: {
             ...current.data,
-            messages: [
-              ...current.data.messages,
-              ...responseMessages.filter((message) => !existingIDs.has(message.id)),
-            ],
+            messages: [...current.data.messages, message],
           },
         }
-      })
-      void queryClient.invalidateQueries({ queryKey: ['qiniu', 'credentials'] })
-    },
-  })
+      }
+      return {
+        ...current,
+        data: {
+          ...current.data,
+          messages: current.data.messages.map((item, index) => (index === existingIndex ? message : item)),
+        },
+      }
+    })
+  }
+  const removeChatMessage = (messageID: string) => {
+    queryClient.setQueryData<{ data: { messages: WorkspaceChatMessage[] } }>(['workspace-chat', workspaceId], (current) => {
+      if (!current) {
+        return current
+      }
+      return {
+        ...current,
+        data: {
+          ...current.data,
+          messages: current.data.messages.filter((item) => item.id !== messageID),
+        },
+      }
+    })
+  }
 
   useEffect(() => {
     if (previousWorkspaceIDRef.current === workspaceId) {
@@ -740,7 +794,16 @@ function WorkspaceDetail() {
     setTerminalSessions(initialTerminalSessions())
     setNextTerminalNumber(2)
     setChatMessage('')
+    setChatStreamError('')
+    setChatStreamStatus('')
+    setChatStreamingContent('')
+    setChatStreaming(false)
   }, [connectWorkspaceMutation.reset, workspaceId])
+
+  useEffect(() => () => {
+    chatAbortControllerRef.current?.abort()
+    chatAbortControllerRef.current = null
+  }, [workspaceId])
 
   const handleWorkbenchTabChange = (value: any) => {
     const nextTab = typeof value === 'string' ? value : 'files'
@@ -951,7 +1014,7 @@ function WorkspaceDetail() {
       return
     }
     chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
-  }, [chatMessagesQuery.data?.data.messages, chatMutation.isPending])
+  }, [chatMessagesQuery.data?.data.messages, chatStreaming, chatStreamStatus, chatStreamingContent])
 
   if (workspacesQuery.isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading workspace...</div>
@@ -1008,15 +1071,60 @@ function WorkspaceDetail() {
   const missingSandboxOpen = sandboxMissing && dismissedMissingWorkspaceID !== workspace?.id
   const maasMissing = qiniuCredentialsQuery.data?.data.maas_configured === false
   const chatMessages = chatMessagesQuery.data?.data.messages ?? []
-  const chatPending = chatMutation.isPending
+  const chatPending = chatStreaming
   const chatDisabled = chatPending || maasMissing || !currentWorkspace?.sandbox_id || reconnecting || sandboxMissing || connectFailed || currentWorkspace?.state !== 'running'
-  const chatError = chatMutation.isError ? chatErrorMessage(chatMutation.error) : ''
+  const chatError = chatStreamError
   const submitChatMessage = () => {
     const message = chatMessage.trim()
-    if (!message || chatDisabled) {
+    if (!message || chatDisabled || !workspaceId) {
       return
     }
-    chatMutation.mutate(message)
+    setChatMessage('')
+    setChatStreamError('')
+    setChatStreamStatus('Starting AI Chat...')
+    setChatStreamingContent('')
+    setChatStreaming(true)
+    chatAbortControllerRef.current?.abort()
+    const abortController = new AbortController()
+    chatAbortControllerRef.current = abortController
+    const optimisticUserID = `temp-user-${Date.now()}`
+    appendChatMessages({
+      id: optimisticUserID,
+      created_at: new Date().toISOString(),
+      role: 'user',
+      content: message,
+    })
+    void streamWorkspaceChatMessage(workspaceId, message, {
+      onUserMessage: (userMessage) => {
+        replaceChatMessage(optimisticUserID, userMessage)
+      },
+      onStatus: (status) => {
+        setChatStreamStatus(status)
+      },
+      onAssistantDelta: (delta) => {
+        setChatStreamingContent((current) => current + delta)
+      },
+      onAssistantMessage: (assistantMessage) => {
+        appendChatMessages(assistantMessage)
+        setChatStreamingContent('')
+      },
+      signal: abortController.signal,
+    }).then(() => {
+      void queryClient.invalidateQueries({ queryKey: ['qiniu', 'credentials'] })
+    }).catch((error: unknown) => {
+      if (isAbortError(error)) {
+        return
+      }
+      removeChatMessage(optimisticUserID)
+      setChatStreamError(chatErrorMessage(error))
+    }).finally(() => {
+      if (chatAbortControllerRef.current === abortController) {
+        chatAbortControllerRef.current = null
+        setChatStreamStatus('')
+        setChatStreamingContent('')
+        setChatStreaming(false)
+      }
+    })
   }
   const handleChatMessageKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
@@ -1211,19 +1319,40 @@ function WorkspaceDetail() {
                 <div
                   key={message.id}
                   className={cn(
-                    'rounded-md px-3 py-2 text-sm',
-                    message.role === 'user' ? 'ml-8 bg-secondary/50' : 'mr-6 bg-transparent px-0',
+                    'flex',
+                    message.role === 'user' ? 'justify-end' : 'justify-start',
                   )}
                 >
-                  <div className="break-words leading-6">
-                    <ChatMarkdown content={message.content} />
+                  <div
+                    data-chat-role={message.role}
+                    className={cn(
+                      'rounded-md px-3 py-2 text-sm',
+                      message.role === 'user'
+                        ? 'w-fit max-w-[calc(100%-2rem)] bg-secondary/50'
+                        : 'mr-6 min-w-0 flex-1 bg-transparent px-0',
+                    )}
+                  >
+                    <div className="break-words leading-6">
+                      <ChatMarkdown content={message.content} />
+                    </div>
                   </div>
                 </div>
               ))}
+              {chatStreamingContent ? (
+                <div className="flex justify-start">
+                  <div className="mr-6 min-w-0 flex-1 rounded-md bg-transparent px-0 py-2 text-sm">
+                    <div className="break-words leading-6">
+                      <ChatMarkdown content={chatStreamingContent} />
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               {chatPending ? (
-                <div className="mr-5 flex items-center gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground">
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                  Running AI Chat in the sandbox...
+                <div className="mr-5 rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-2">
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                    {chatStreamStatus || 'Running AI Chat in the sandbox...'}
+                  </div>
                 </div>
               ) : null}
               {maasMissing ? (
