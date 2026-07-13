@@ -24,6 +24,7 @@ import (
 
 type sandboxRuntime interface {
 	ListTemplates(ctx context.Context, apiKey, endpoint string) ([]sandboxRuntimeTemplate, error)
+	ListSandboxes(ctx context.Context, apiKey, endpoint string) ([]sandboxRuntimeListedSandbox, error)
 	Create(ctx context.Context, apiKey string, req sandboxRuntimeCreateRequest) (*sandboxRuntimeInfo, error)
 	Connect(ctx context.Context, apiKey, sandboxID string, timeoutSeconds int32, endpoint string) (*sandboxRuntimeInfo, error)
 	PrepareWorkspace(ctx context.Context, apiKey string, req sandboxRuntimeWorkspaceRequest) (*sandboxRuntimeWorkspace, error)
@@ -45,6 +46,16 @@ type sandboxRuntimeTemplate struct {
 	MemoryMB    int32
 	DiskSizeMB  int32
 	Public      bool
+}
+
+type sandboxRuntimeListedSandbox struct {
+	SandboxID  string
+	TemplateID string
+	State      string
+	CPUCount   int32
+	MemoryMB   int32
+	DiskSizeMB int32
+	Metadata   map[string]string
 }
 
 type sandboxRuntimeCreateRequest struct {
@@ -206,6 +217,40 @@ func (r *qiniuSandboxRuntime) ListTemplates(ctx context.Context, apiKey, endpoin
 			MemoryMB:    template.MemoryMB,
 			DiskSizeMB:  template.DiskSizeMB,
 			Public:      template.Public,
+		})
+	}
+	return out, nil
+}
+
+func (r *qiniuSandboxRuntime) ListSandboxes(ctx context.Context, apiKey, endpoint string) ([]sandboxRuntimeListedSandbox, error) {
+	if endpoint == "" {
+		endpoint = r.endpoint
+	}
+	client, err := qiniusb.NewClient(&qiniusb.Config{
+		APIKey:   apiKey,
+		Endpoint: endpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sandboxes, err := client.List(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sandboxRuntimeListedSandbox, 0, len(sandboxes))
+	for _, sandbox := range sandboxes {
+		var metadata map[string]string
+		if sandbox.Metadata != nil {
+			metadata = map[string]string(*sandbox.Metadata)
+		}
+		out = append(out, sandboxRuntimeListedSandbox{
+			SandboxID:  sandbox.SandboxID,
+			TemplateID: sandbox.TemplateID,
+			State:      string(sandbox.State),
+			CPUCount:   sandbox.CPUCount,
+			MemoryMB:   sandbox.MemoryMB,
+			DiskSizeMB: sandbox.DiskSizeMB,
+			Metadata:   metadata,
 		})
 	}
 	return out, nil

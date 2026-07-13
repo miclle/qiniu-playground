@@ -159,6 +159,13 @@ function metadataEntries(metadata?: Record<string, string>) {
     .sort(([left], [right]) => left.localeCompare(right))
 }
 
+function formatResourceSizeMB(value: number) {
+  if (value >= 1024 && value % 1024 === 0) {
+    return `${value / 1024} GB`
+  }
+  return `${value} MB`
+}
+
 function Home({ page }: HomeProps) {
   const navigate = useNavigate()
   const [credentials, setCredentials] = useState({
@@ -214,9 +221,9 @@ function Home({ page }: HomeProps) {
     enabled: Boolean(data && qiniuStatusForTemplates?.configured),
   })
   const sandboxesQuery = useQuery({
-    queryKey: ['sandboxes'],
-    queryFn: sandboxSessions,
-    enabled: Boolean(data),
+    queryKey: ['sandboxes', workspaceConfig.region],
+    queryFn: () => sandboxSessions(workspaceConfig.region),
+    enabled: Boolean(data && qiniuStatusForTemplates?.configured),
   })
   const saveCredential = useMutation({
     mutationFn: saveQiniuCredential,
@@ -240,13 +247,13 @@ function Home({ page }: HomeProps) {
     },
   })
   const createSandboxMutation = useMutation({
-    mutationFn: () => createSandbox(),
+    mutationFn: () => createSandbox({ region: workspaceConfig.region }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['sandboxes'] })
     },
   })
   const connectSandboxMutation = useMutation({
-    mutationFn: connectSandbox,
+    mutationFn: (sandboxID: string) => connectSandbox(sandboxID, { region: workspaceConfig.region }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['sandboxes'] })
     },
@@ -302,6 +309,22 @@ function Home({ page }: HomeProps) {
     template.cpu_count || template.memory_mb || template.disk_size_mb
       ? `${template.cpu_count || '-'} CPU / ${template.memory_mb || '-'} MB / ${template.disk_size_mb || '-'} MB`
       : '-'
+  const sandboxResources = (sandbox: (typeof sandboxes)[number]) => {
+    if (!sandbox.cpu_count && !sandbox.memory_gb && !sandbox.disk_size_mb) {
+      return '-'
+    }
+    const memory = sandbox.memory_gb ? `${sandbox.memory_gb} GB` : '-'
+    const disk = sandbox.disk_size_mb ? `${formatResourceSizeMB(sandbox.disk_size_mb)} disk` : '-'
+    return `${sandbox.cpu_count || '-'} CPU / ${memory} / ${disk}`
+  }
+  const sandboxWorkspaceID = (sandbox: (typeof sandboxes)[number]) =>
+    sandbox.metadata?.workspace_id ||
+    workspaceRows.find((workspace) => workspace.sandbox_id && workspace.sandbox_id === sandbox.sandbox_id)?.id
+  const sandboxWorkspaceLabel = (sandbox: (typeof sandboxes)[number]) =>
+    sandbox.repo_full_name ||
+    sandbox.metadata?.workspace_name ||
+    workspaceRows.find((workspace) => workspace.sandbox_id && workspace.sandbox_id === sandbox.sandbox_id)?.name ||
+    sandbox.template_id
 
   function handleCredentialSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -887,63 +910,90 @@ function Home({ page }: HomeProps) {
         <div className="p-5 text-sm text-muted-foreground">Loading templates...</div>
       ) : templatesQuery.isError ? (
         <div className="p-5 text-sm text-muted-foreground">Failed to load templates. Check the Sandbox API Key and try again.</div>
-      ) : templates.length > 0 ? (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-left text-sm">
-            <thead className="border-b bg-secondary/40 text-xs font-medium uppercase text-muted-foreground">
-              <tr>
-                <th className="px-5 py-3">Aliases</th>
-                <th className="px-5 py-3">Template ID</th>
-                <th className="px-5 py-3">Resources</th>
-                <th className="px-5 py-3">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {templates.map((template) => (
-                <tr key={template.template_id} className="align-top">
-                  <td className="max-w-[260px] px-5 py-4">
-                    {template.aliases?.length ? (
-                      <div className="flex flex-wrap gap-1.5">
-                        {template.aliases.map((alias) => (
-                          <span key={alias} className="rounded-md bg-secondary px-2 py-1 font-medium text-foreground">
-                            {alias}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-muted-foreground">No aliases</span>
-                    )}
-                  </td>
-                  <td className="max-w-[260px] px-5 py-4 font-mono text-xs text-muted-foreground">
-                    <span className="block truncate">{template.template_id}</span>
-                  </td>
-                  <td className="whitespace-nowrap px-5 py-4 text-muted-foreground">{templateResources(template)}</td>
-                  <td className="px-5 py-4">
-                    <div className="flex flex-wrap gap-1.5">
-                      {template.build_status ? (
-                        <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">{template.build_status}</span>
-                      ) : null}
-                      {template.default ? (
-                        <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">Default</span>
-                      ) : null}
-                      {template.public ? (
-                        <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">Public</span>
-                      ) : null}
-                      {!template.build_status && !template.default && !template.public ? (
-                        <span className="text-muted-foreground">-</span>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       ) : (
-        <div className="flex items-center gap-3 p-5 text-sm text-muted-foreground">
-          <Server className="h-4 w-4" />
-          <span>No templates found for this Sandbox API Key.</span>
-        </div>
+        <>
+          <div className="flex flex-col gap-3 border-b px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold">Template catalog</h2>
+              <p className="mt-1 text-xs text-muted-foreground">Region-scoped templates available for new sandboxes.</p>
+            </div>
+            <Select
+              value={workspaceConfig.region}
+              onValueChange={(value) =>
+                setWorkspaceConfig((current) => ({ ...current, region: value ?? current.region, templateID: '' }))
+              }
+            >
+              <SelectTrigger className="w-full sm:w-[190px]">
+                <SelectValue>{selectedRegion.label}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {workspaceRegions.map((region) => (
+                  <SelectItem key={region.id} value={region.endpoint}>
+                    {region.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {templates.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-left text-sm">
+                <thead className="border-b bg-secondary/40 text-xs font-medium uppercase text-muted-foreground">
+                  <tr>
+                    <th className="px-5 py-3">Aliases</th>
+                    <th className="px-5 py-3">Template ID</th>
+                    <th className="px-5 py-3">Resources</th>
+                    <th className="px-5 py-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {templates.map((template) => (
+                    <tr key={template.template_id} className="align-top">
+                      <td className="max-w-[260px] px-5 py-4">
+                        {template.aliases?.length ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {template.aliases.map((alias) => (
+                              <span key={alias} className="rounded-md bg-secondary px-2 py-1 font-medium text-foreground">
+                                {alias}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">No aliases</span>
+                        )}
+                      </td>
+                      <td className="max-w-[260px] px-5 py-4 font-mono text-xs text-muted-foreground">
+                        <span className="block truncate">{template.template_id}</span>
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-4 text-muted-foreground">{templateResources(template)}</td>
+                      <td className="px-5 py-4">
+                        <div className="flex flex-wrap gap-1.5">
+                          {template.build_status ? (
+                            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">{template.build_status}</span>
+                          ) : null}
+                          {template.default ? (
+                            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">Default</span>
+                          ) : null}
+                          {template.public ? (
+                            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">Public</span>
+                          ) : null}
+                          {!template.build_status && !template.default && !template.public ? (
+                            <span className="text-muted-foreground">-</span>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 p-5 text-sm text-muted-foreground">
+              <Server className="h-4 w-4" />
+              <span>No templates found for this Sandbox API Key.</span>
+            </div>
+          )}
+        </>
       )}
     </section>
   )
@@ -957,70 +1007,123 @@ function Home({ page }: HomeProps) {
             Create a sandbox with the stored Qiniu API key, or reconnect an existing one.
           </p>
         </div>
-        <Button
-          type="button"
-          size="lg"
-          disabled={!qiniuStatus?.configured || createSandboxMutation.isPending}
-          onClick={() => createSandboxMutation.mutate()}
-        >
-          Create sandbox
-        </Button>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+          <Select
+            value={workspaceConfig.region}
+            onValueChange={(value) =>
+              setWorkspaceConfig((current) => ({ ...current, region: value ?? current.region, templateID: '' }))
+            }
+          >
+            <SelectTrigger className="w-full sm:w-[190px]">
+              <SelectValue>{selectedRegion.label}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {workspaceRegions.map((region) => (
+                <SelectItem key={region.id} value={region.endpoint}>
+                  {region.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            type="button"
+            size="lg"
+            className="w-full sm:w-auto"
+            disabled={!qiniuStatus?.configured || createSandboxMutation.isPending}
+            onClick={() => createSandboxMutation.mutate()}
+          >
+            Create sandbox
+          </Button>
+        </div>
       </div>
       {sandboxes.length > 0 ? (
-        <div className="divide-y">
-          {sandboxes.map((sandbox) => (
-            <div key={sandbox.id} className="flex flex-col gap-3 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-medium">{sandbox.sandbox_id}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {sandbox.repo_full_name || sandbox.template_id} · {sandbox.state}
-                </p>
-                {sandbox.region || sandbox.cpu_count || sandbox.memory_gb ? (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {[sandbox.region, sandbox.cpu_count ? `${sandbox.cpu_count} CPU` : '', sandbox.memory_gb ? `${sandbox.memory_gb}G` : '']
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </p>
-                ) : null}
-                {metadataEntries(sandbox.metadata).length > 0 ? (
-                  <div className="mt-2 flex max-w-3xl flex-wrap gap-1.5">
-                    {metadataEntries(sandbox.metadata).map(([key, value]) => (
-                      <span key={key} className="rounded-md border bg-secondary/30 px-2 py-1 text-xs text-muted-foreground">
-                        <span className="font-medium text-foreground">{key}</span>: {value}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-              <div className="flex items-center gap-2">
-                {sandbox.ide_url ? (
-                  <a
-                    className={cn(buttonVariants({ variant: 'outline' }), 'text-muted-foreground no-underline hover:text-foreground')}
-                    href={sandbox.ide_url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    IDE
-                  </a>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setTerminalSandboxID(sandbox.sandbox_id)}
-                >
-                  Terminal
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={connectSandboxMutation.isPending}
-                  onClick={() => connectSandboxMutation.mutate(sandbox.sandbox_id)}
-                >
-                  Connect
-                </Button>
-              </div>
-            </div>
-          ))}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[920px] text-left text-sm">
+            <thead className="border-b bg-secondary/40 text-xs font-medium uppercase text-muted-foreground">
+              <tr>
+                <th className="px-5 py-3">Sandbox</th>
+                <th className="px-5 py-3">Status</th>
+                <th className="px-5 py-3">Workspace</th>
+                <th className="px-5 py-3">Resources</th>
+                <th className="px-5 py-3">Metadata</th>
+                <th className="px-5 py-3 text-right" aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {sandboxes.map((sandbox) => {
+                const workspaceID = sandboxWorkspaceID(sandbox)
+                const workspaceLabel = sandboxWorkspaceLabel(sandbox)
+                return (
+                  <tr key={sandbox.id} className="align-top">
+                    <td className="max-w-[260px] px-5 py-4">
+                      <span className="block truncate font-medium">{sandbox.sandbox_id}</span>
+                    </td>
+                    <td className="whitespace-nowrap px-5 py-4 text-muted-foreground">{sandbox.state || '-'}</td>
+                    <td className="max-w-[260px] px-5 py-4">
+                      {workspaceID ? (
+                        <Link
+                          className="block truncate font-medium text-foreground underline-offset-4 hover:underline"
+                          to={`/workspaces/${workspaceID}`}
+                        >
+                          {workspaceLabel}
+                        </Link>
+                      ) : (
+                        <span className="block truncate font-medium">{workspaceLabel}</span>
+                      )}
+                      {sandbox.workspace_path ? (
+                        <span className="mt-1 block truncate font-mono text-xs text-muted-foreground">{sandbox.workspace_path}</span>
+                      ) : null}
+                    </td>
+                    <td className="whitespace-nowrap px-5 py-4 text-muted-foreground">{sandboxResources(sandbox)}</td>
+                    <td className="max-w-[320px] px-5 py-4">
+                      {metadataEntries(sandbox.metadata).length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {metadataEntries(sandbox.metadata).map(([key, value]) => (
+                            <span key={key} className="rounded-md border bg-secondary/30 px-2 py-1 text-xs text-muted-foreground">
+                              <span className="font-medium text-foreground">{key}</span>: {value}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex justify-end gap-2">
+                        {sandbox.ide_url ? (
+                          <a
+                            className={cn(buttonVariants({ variant: 'outline' }), 'text-muted-foreground no-underline hover:text-foreground')}
+                            href={sandbox.ide_url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            IDE
+                          </a>
+                        ) : null}
+                        {sandbox.local_session ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setTerminalSandboxID(sandbox.sandbox_id)}
+                          >
+                            Terminal
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={connectSandboxMutation.isPending}
+                          onClick={() => connectSandboxMutation.mutate(sandbox.sandbox_id)}
+                        >
+                          Connect
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       ) : (
         <div className="flex items-center gap-3 p-5 text-sm text-muted-foreground">

@@ -40,6 +40,7 @@ type fakeSandboxRuntime struct {
 	lastWorkspaceRequest   sandboxRuntimeWorkspaceRequest
 	lastPrepareRequest     sandboxRuntimeRepositoryRequest
 	lastTemplatesEndpoint  string
+	lastListEndpoint       string
 	lastConnectEndpoint    string
 	lastPTYEndpoint        string
 	lastFilesystemEndpoint string
@@ -58,6 +59,7 @@ type fakeSandboxRuntime struct {
 	lastPTYSize            sandboxPTYSize
 	onPTYData              func([]byte)
 	templates              []sandboxRuntimeTemplate
+	listSandboxes          []sandboxRuntimeListedSandbox
 	connectErr             error
 	readFileErr            error
 	aiChatResult           *sandboxRuntimeAIChatResult
@@ -113,6 +115,24 @@ func (f *fakeSandboxRuntime) ListTemplates(ctx context.Context, apiKey, endpoint
 	return []sandboxRuntimeTemplate{
 		{TemplateID: "base", BuildStatus: "ready", CPUCount: 2, MemoryMB: 1024, DiskSizeMB: 10240, Public: true},
 	}, nil
+}
+
+func (f *fakeSandboxRuntime) ListSandboxes(ctx context.Context, apiKey, endpoint string) ([]sandboxRuntimeListedSandbox, error) {
+	f.lastAPIKey = apiKey
+	f.lastListEndpoint = endpoint
+	out := make([]sandboxRuntimeListedSandbox, 0, len(f.listSandboxes))
+	for _, sandbox := range f.listSandboxes {
+		out = append(out, sandboxRuntimeListedSandbox{
+			SandboxID:  sandbox.SandboxID,
+			TemplateID: sandbox.TemplateID,
+			State:      sandbox.State,
+			CPUCount:   sandbox.CPUCount,
+			MemoryMB:   sandbox.MemoryMB,
+			DiskSizeMB: sandbox.DiskSizeMB,
+			Metadata:   sandbox.Metadata,
+		})
+	}
+	return out, nil
 }
 
 func (f *fakeSandboxRuntime) Create(ctx context.Context, apiKey string, req sandboxRuntimeCreateRequest) (*sandboxRuntimeInfo, error) {

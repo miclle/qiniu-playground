@@ -17,6 +17,11 @@ const defaultSandboxPollInterval = 2 * time.Second
 type createSandboxRequest struct {
 	TemplateID     string `json:"template_id"`
 	TimeoutSeconds int32  `json:"timeout_seconds"`
+	Region         string `json:"region"`
+}
+
+type connectSandboxRequest struct {
+	Region string `json:"region"`
 }
 
 type sandboxSessionResponse struct {
@@ -31,7 +36,9 @@ type sandboxSessionResponse struct {
 	Region          string            `json:"region,omitempty"`
 	CPUCount        int32             `json:"cpu_count,omitempty"`
 	MemoryGB        int32             `json:"memory_gb,omitempty"`
+	DiskSizeMB      int32             `json:"disk_size_mb,omitempty"`
 	IDEURL          string            `json:"ide_url,omitempty"`
+	LocalSession    bool              `json:"local_session"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
 	LastConnectedAt string            `json:"last_connected_at,omitempty"`
 }
@@ -57,13 +64,27 @@ func (ctrl *Ctrl) SandboxSessions(c *fox.Context) any {
 	if err != nil {
 		return httperrors.New(http.StatusUnauthorized, "unauthorized")
 	}
+	apiKey, err := ctrl.qiniuAPIKey(c, accountID)
+	if err != nil {
+		return err
+	}
+	region := c.Query("region")
+	remoteSandboxes, err := ctrl.sandboxRuntime.ListSandboxes(c.Request.Context(), apiKey, region)
+	if err != nil {
+		return err
+	}
 	sessions, err := ctrl.service.ListSandboxSessions(c.Request.Context(), accountID)
 	if err != nil {
 		return err
 	}
-	out := make([]sandboxSessionResponse, 0, len(sessions))
+	sessionsBySandboxID := make(map[string]entity.SandboxSession, len(sessions))
 	for _, session := range sessions {
-		out = append(out, ctrl.sandboxSessionResponse(c.Request, session))
+		sessionsBySandboxID[session.SandboxID] = session
+	}
+	out := make([]sandboxSessionResponse, 0, len(remoteSandboxes))
+	for _, sandbox := range remoteSandboxes {
+		local, ok := sessionsBySandboxID[sandbox.SandboxID]
+		out = append(out, ctrl.listedSandboxSessionResponse(c.Request, accountID, sandbox, local, ok, region))
 	}
 	return map[string]any{"sandboxes": out}
 }
@@ -93,6 +114,7 @@ func (ctrl *Ctrl) CreateSandbox(c *fox.Context) any {
 		TemplateID:      req.TemplateID,
 		TimeoutSeconds:  req.TimeoutSeconds,
 		PollingInterval: defaultSandboxPollInterval,
+		Endpoint:        req.Region,
 		Metadata: sandboxMetadata("standalone", map[string]string{
 			"template_id": req.TemplateID,
 		}),
@@ -105,6 +127,7 @@ func (ctrl *Ctrl) CreateSandbox(c *fox.Context) any {
 		TemplateID: info.TemplateID,
 		State:      info.State,
 		Endpoint:   info.Endpoint,
+		Region:     req.Region,
 		Metadata: sandboxMetadata("standalone", map[string]string{
 			"template_id": req.TemplateID,
 		}),
@@ -124,9 +147,18 @@ func (ctrl *Ctrl) ConnectSandbox(c *fox.Context) any {
 	if sandboxID == "" {
 		return httperrors.New(http.StatusBadRequest, "sandbox id is required")
 	}
+	var req connectSandboxRequest
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			return httperrors.New(http.StatusBadRequest, "invalid request body")
+		}
+	}
 	var endpoint string
 	if session, err := ctrl.service.SandboxSession(c.Request.Context(), accountID, sandboxID); err == nil {
 		endpoint = session.Region
+	}
+	if req.Region != "" {
+		endpoint = req.Region
 	}
 	apiKey, err := ctrl.qiniuAPIKey(c, accountID)
 	if err != nil {
@@ -252,10 +284,55 @@ func (ctrl *Ctrl) sandboxSessionResponse(req *http.Request, session entity.Sandb
 		CPUCount:      session.CPUCount,
 		MemoryGB:      session.MemoryGB,
 		IDEURL:        ctrl.ideProxyURL(req, session.AccountID, session.SandboxID, session.IDEURL),
+		LocalSession:  true,
 		Metadata:      map[string]string(session.Metadata),
 	}
 	if session.LastConnectedAt != nil {
 		out.LastConnectedAt = session.LastConnectedAt.Format(time.RFC3339)
+	}
+	return out
+}
+
+func (ctrl *Ctrl) listedSandboxSessionResponse(req *http.Request, accountID string, sandbox sandboxRuntimeListedSandbox, local entity.SandboxSession, hasLocal bool, region string) sandboxSessionResponse {
+	metadata := make(map[string]string)
+	for key, value := range sandbox.Metadata {
+		metadata[key] = value
+	}
+	if hasLocal {
+		for key, value := range local.Metadata {
+			metadata[key] = value
+		}
+		if region == "" {
+			region = local.Region
+		}
+	}
+	memoryGB := int32(0)
+	if sandbox.MemoryMB > 0 {
+		memoryGB = (sandbox.MemoryMB + 1023) / 1024
+	}
+	out := sandboxSessionResponse{
+		ID:              sandbox.SandboxID,
+		SandboxID:       sandbox.SandboxID,
+		TemplateID:      sandbox.TemplateID,
+		State:           sandbox.State,
+		Region:          region,
+		CPUCount:        sandbox.CPUCount,
+		MemoryGB:        memoryGB,
+		DiskSizeMB:      sandbox.DiskSizeMB,
+		LocalSession:    hasLocal,
+		Metadata:        metadata,
+		LastConnectedAt: "",
+	}
+	if hasLocal {
+		out.ID = local.ID
+		out.Endpoint = local.Endpoint
+		out.GitHubRepoID = local.GitHubRepoID
+		out.RepoFullName = local.RepoFullName
+		out.WorkspacePath = local.WorkspacePath
+		out.IDEURL = ctrl.ideProxyURL(req, accountID, sandbox.SandboxID, local.IDEURL)
+		if local.LastConnectedAt != nil {
+			out.LastConnectedAt = local.LastConnectedAt.Format(time.RFC3339)
+		}
 	}
 	return out
 }

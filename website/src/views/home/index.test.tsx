@@ -37,6 +37,10 @@ let sandboxFixtures: Array<{
   workspace_path?: string
   region?: string
   metadata?: Record<string, string>
+  cpu_count?: number
+  memory_gb?: number
+  disk_size_mb?: number
+  local_session?: boolean
 }> = []
 let templateFixtures: Array<{
   template_id: string
@@ -290,9 +294,15 @@ test('renders sandbox metadata on sandbox sessions', async () => {
       repo_full_name: 'qiniu/playground',
       workspace_path: '/workspace/qiniu__playground',
       region: 'https://us-south-1-sandbox.qiniuapi.com',
+      cpu_count: 4,
+      memory_gb: 8,
+      disk_size_mb: 20480,
+      local_session: true,
       metadata: {
         created_by: 'qiniu-playground',
         kind: 'workspace',
+        workspace_id: 'wks_123',
+        workspace_name: 'Playground',
         repo_full_name: 'qiniu/playground',
         workspace_path: '/workspace/qiniu__playground',
       },
@@ -315,8 +325,45 @@ test('renders sandbox metadata on sandbox sessions', async () => {
   await waitFor(() => {
     expect(container.textContent).toContain('sbox_123')
   })
+  const workspaceLink = container.querySelector('a[href="/workspaces/wks_123"]')
+  expect(workspaceLink?.textContent).toContain('qiniu/playground')
+  expect(container.textContent).toContain('4 CPU / 8 GB / 20 GB disk')
   expect(container.textContent).toContain('created_by: qiniu-playground')
   expect(container.textContent).toContain('kind: workspace')
+  expect(container.textContent).toContain('workspace_id: wks_123')
+  expect(container.textContent).toContain('workspace_name: Playground')
   expect(container.textContent).toContain('repo_full_name: qiniu/playground')
   expect(container.textContent).toContain('workspace_path: /workspace/qiniu__playground')
+})
+
+test('hides terminal action for remote-only sandbox sessions', async () => {
+  sandboxFixtures = [
+    {
+      id: 'sbox_remote',
+      sandbox_id: 'sbox_remote',
+      template_id: 'tmpl_react',
+      state: 'paused',
+      local_session: false,
+    },
+  ]
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createTestRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <Home page="sandbox" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('sbox_remote')
+  })
+
+  expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent === 'Terminal')).toBe(false)
+  expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent === 'Connect')).toBe(true)
 })
