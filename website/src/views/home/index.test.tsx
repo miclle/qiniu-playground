@@ -2,7 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { queryClient } from 'src/lib/query-client'
 import Home from './index'
@@ -47,6 +47,13 @@ let templateFixtures: Array<{
 }> = []
 
 const createWorkspaceMock = vi.hoisted(() => vi.fn())
+let mountedRoots: Array<ReturnType<typeof createRoot>> = []
+
+function createTestRoot(container: HTMLElement) {
+  const root = createRoot(container)
+  mountedRoots.push(root)
+  return root
+}
 
 vi.mock('src/api/auth', () => ({
   currentUser: () => apiResponse({
@@ -95,7 +102,7 @@ vi.mock('src/api/workspaces', () => ({
 async function waitFor(assertion: () => void) {
   const startedAt = Date.now()
   let lastError: unknown
-  while (Date.now() - startedAt < 1000) {
+  while (Date.now() - startedAt < 3000) {
     try {
       assertion()
       return
@@ -125,10 +132,18 @@ beforeEach(() => {
   document.body.innerHTML = ''
 })
 
+afterEach(async () => {
+  await act(async () => {
+    mountedRoots.forEach((root) => root.unmount())
+  })
+  mountedRoots = []
+  document.body.innerHTML = ''
+})
+
 test('shows GitHub App setup prompt only inside create workspace dialog', async () => {
   const container = document.createElement('div')
   document.body.appendChild(container)
-  const root = createRoot(container)
+  const root = createTestRoot(container)
 
   await act(async () => {
     root.render(
@@ -145,8 +160,12 @@ test('shows GitHub App setup prompt only inside create workspace dialog', async 
   })
   expect(container.textContent).not.toContain('Configure GitHub App')
 
-  const newWorkspaceButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'New workspace')
-  expect(newWorkspaceButton).toBeTruthy()
+  let newWorkspaceButton: HTMLButtonElement | undefined
+  await waitFor(() => {
+    newWorkspaceButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'New workspace')
+    expect(newWorkspaceButton).toBeTruthy()
+    expect(newWorkspaceButton?.hasAttribute('disabled')).toBe(false)
+  })
 
   await act(async () => {
     newWorkspaceButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -169,7 +188,7 @@ test('shows a sandbox creation overlay while a new workspace is being created', 
 
   const container = document.createElement('div')
   document.body.appendChild(container)
-  const root = createRoot(container)
+  const root = createTestRoot(container)
 
   await act(async () => {
     root.render(
@@ -181,14 +200,14 @@ test('shows a sandbox creation overlay while a new workspace is being created', 
     )
   })
 
+  let newWorkspaceButton: HTMLButtonElement | undefined
   await waitFor(() => {
-    expect(container.textContent).toContain('New workspace')
+    newWorkspaceButton = Array.from(container.querySelectorAll('button')).find((button) => (
+      button.textContent === 'New workspace'
+    ))
+    expect(newWorkspaceButton).toBeTruthy()
+    expect(newWorkspaceButton?.hasAttribute('disabled')).toBe(false)
   })
-
-  const newWorkspaceButton = Array.from(container.querySelectorAll('button')).find((button) => (
-    button.textContent === 'New workspace'
-  ))
-  expect(newWorkspaceButton).toBeTruthy()
 
   await act(async () => {
     newWorkspaceButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -232,7 +251,7 @@ test('renders workspace rows as detail links with timestamps and no action butto
   ]
   const container = document.createElement('div')
   document.body.appendChild(container)
-  const root = createRoot(container)
+  const root = createTestRoot(container)
 
   await act(async () => {
     root.render(
@@ -281,7 +300,7 @@ test('renders sandbox metadata on sandbox sessions', async () => {
   ]
   const container = document.createElement('div')
   document.body.appendChild(container)
-  const root = createRoot(container)
+  const root = createTestRoot(container)
 
   await act(async () => {
     root.render(

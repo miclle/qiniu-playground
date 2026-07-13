@@ -13,6 +13,10 @@ import routes from 'src/router'
 import WorkspaceDetail from './index'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+Object.defineProperty(Range.prototype, 'getClientRects', {
+  configurable: true,
+  value: () => [],
+})
 
 function apiResponse<T>(data: T) {
   return Promise.resolve({ data })
@@ -229,7 +233,7 @@ vi.mock('src/api/auth', () => ({
 async function waitFor(assertion: () => void) {
   const startedAt = Date.now()
   let lastError: unknown
-  while (Date.now() - startedAt < 1000) {
+  while (Date.now() - startedAt < 3000) {
     try {
       assertion()
       return
@@ -244,6 +248,7 @@ async function waitFor(assertion: () => void) {
 }
 
 beforeEach(() => {
+  document.documentElement.classList.remove('dark')
   queryClient.clear()
   fetchWorkspaces.mockReset()
   fetchWorkspaces.mockImplementation(() => apiResponse({
@@ -1136,6 +1141,122 @@ test('falls back to the sandbox home directory when the workspace path is missin
   expect(fetchSandboxFiles).toHaveBeenCalledWith('sbox_456', '/workspace/qiniu__vision-tube')
   expect(container.textContent).toContain('/home/user')
   expect(container.textContent).not.toContain('Failed to load files.')
+})
+
+test('renders previewable file content in a read-only CodeMirror editor', async () => {
+  document.documentElement.classList.add('dark')
+  fetchSandboxFiles.mockImplementation((sandboxID: string, path: string) => apiResponse({
+    sandbox_id: sandboxID,
+    entries: [
+      {
+        name: 'README.md',
+        type: 'file',
+        path: `${path}/README.md`,
+        size: 42,
+        owner: 'user',
+        group: 'user',
+        permissions: '-rw-r--r--',
+      },
+    ] satisfies SandboxFileEntry[],
+  }))
+
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain('README.md')
+  })
+
+  const readmeButton = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === 'README.md'
+  ))
+
+  await act(async () => {
+    readmeButton?.click()
+  })
+
+  await waitFor(() => {
+    expect(container.querySelector('.cm-editor')).toBeTruthy()
+  })
+
+  expect(container.querySelector('.cm-content')?.getAttribute('contenteditable')).toBe('true')
+  expect(container.querySelector('.cm-content')?.getAttribute('inputmode')).toBe('none')
+  expect(container.querySelector('.cm-content')?.getAttribute('aria-label')).toBe('File content preview')
+  expect(container.querySelector('.cm-content')?.textContent).toContain('# Readme')
+  expect(container.querySelector('.cm-theme-dark')).toBeTruthy()
+  expect(container.querySelector('pre')).toBeNull()
+
+  document.documentElement.classList.remove('dark')
+  await waitFor(() => {
+    expect(container.querySelector('.cm-theme-light')).toBeTruthy()
+  })
+})
+
+test.each(['cjs', 'cts', 'mts'])('previews .%s modules in CodeMirror', async (extension) => {
+  const filename = `module.${extension}`
+  fetchSandboxFiles.mockImplementation((sandboxID: string, path: string) => apiResponse({
+    sandbox_id: sandboxID,
+    entries: [
+      {
+        name: filename,
+        type: 'file',
+        path: `${path}/${filename}`,
+        size: 42,
+        owner: 'user',
+        group: 'user',
+        permissions: '-rw-r--r--',
+      },
+    ] satisfies SandboxFileEntry[],
+  }))
+  fetchSandboxFileContent.mockImplementation(() => Promise.resolve({
+    data: new Blob(['const value = 1'], { type: 'application/octet-stream' }),
+    headers: { 'content-type': 'application/octet-stream' },
+  }))
+
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root = createRoot(container)
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/workspaces/wks_123']}>
+          <Routes>
+            <Route path="/workspaces/:workspaceId" element={<WorkspaceDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  })
+
+  await waitFor(() => {
+    expect(container.textContent).toContain(filename)
+  })
+
+  const fileButton = Array.from(container.querySelectorAll('button')).find((button) => (
+    button.textContent === filename
+  ))
+  await act(async () => {
+    fileButton?.click()
+  })
+
+  await waitFor(() => {
+    expect(container.querySelector('.cm-editor')).toBeTruthy()
+  })
+  expect(container.querySelector('.cm-content')?.textContent).toContain('const value = 1')
 })
 
 test('downloads an unpreviewed large file from the selected sandbox path', async () => {

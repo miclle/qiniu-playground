@@ -14,12 +14,13 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 
 import { sandboxFileContent, sandboxFilePreviewURL, sandboxFiles, workspaceFilePreviewURL } from 'src/api/filesystem'
 import type { SandboxFileEntry } from 'src/api/filesystem'
 import { Button, buttonVariants } from 'src/components/ui/button'
 import { Input } from 'src/components/ui/input'
+import { fileExtension } from 'src/lib/file-extension'
 import { cn } from 'src/lib/utils'
 
 const maxPreviewFileSize = 1024 * 1024
@@ -27,10 +28,13 @@ const fallbackFilesystemPath = '/home/user'
 const minTreeWidth = 240
 const defaultTreeWidth = minTreeWidth
 const minPreviewWidth = 360
+const FileContentPreview = lazy(() => import('src/components/FileContentPreview'))
 const textExtensions = new Set([
   'bash',
   'conf',
   'css',
+  'cjs',
+  'cts',
   'csv',
   'env',
   'go',
@@ -42,6 +46,7 @@ const textExtensions = new Set([
   'log',
   'md',
   'mjs',
+  'mts',
   'py',
   'rs',
   'sh',
@@ -80,13 +85,9 @@ function sortEntries(entries: SandboxFileEntry[]) {
   })
 }
 
-function fileExtension(entry: SandboxFileEntry) {
+function entryExtension(entry: SandboxFileEntry) {
   const name = entry.name || entry.path
-  const index = name.lastIndexOf('.')
-  if (index < 0 || index === name.length - 1) {
-    return name.toLowerCase()
-  }
-  return name.slice(index + 1).toLowerCase()
+  return fileExtension(name)
 }
 
 function isPreviewable(entry: SandboxFileEntry, contentType: string) {
@@ -98,11 +99,11 @@ function isPreviewable(entry: SandboxFileEntry, contentType: string) {
   if (mimeType && mimeType !== 'application/octet-stream') {
     return false
   }
-  return textExtensions.has(fileExtension(entry))
+  return textExtensions.has(entryExtension(entry))
 }
 
 function isHTMLFile(entry: SandboxFileEntry) {
-  return ['html', 'htm'].includes(fileExtension(entry))
+  return ['html', 'htm'].includes(entryExtension(entry))
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -201,7 +202,6 @@ export function WorkspaceFileBrowser({
     () => sortEntries(filesQuery.data?.data.entries ?? []),
     [filesQuery.data?.data.entries],
   )
-
   async function openFile(entry: SandboxFileEntry) {
     setSelectedFile(entry)
     selectedFilePathRef.current = entry.path
@@ -604,7 +604,17 @@ export function WorkspaceFileBrowser({
             ) : fileError ? (
               <div className="p-4 text-sm text-destructive">{fileError}</div>
             ) : filePreviewable ? (
-              <pre className="min-h-full w-full overflow-auto p-4 font-mono text-xs leading-6 text-foreground">{fileContent}</pre>
+              <Suspense fallback={(
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Loading preview...
+                </div>
+              )}>
+                <FileContentPreview
+                  content={fileContent}
+                  filename={selectedFile.name || selectedFile.path}
+                />
+              </Suspense>
             ) : (
               <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
                 Preview is unavailable for this file. Use download to inspect it locally.
