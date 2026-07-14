@@ -10,6 +10,8 @@ func TestIsAPIRoute(t *testing.T) {
 		{route: "/api", want: true},
 		{route: "/api/v1/auth/me", want: true},
 		{route: "/workspaces", want: false},
+		{route: "/code-runner", want: false},
+		{route: "/code-runner/crs_01HX", want: false},
 		{route: "/credentials", want: false},
 		{route: "/codebases", want: false},
 		{route: "/sandboxes", want: false},

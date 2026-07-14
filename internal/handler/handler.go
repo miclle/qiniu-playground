@@ -20,6 +20,7 @@ type Ctrl struct {
 	credentialBox                *cryptobox.Box
 	sandboxRuntime               sandboxRuntime
 	defaultSandboxTemplateID     string
+	codeInterpreterTemplateID    string
 	defaultSandboxTimeoutSeconds int32
 }
 
@@ -32,6 +33,10 @@ func New(svc *service.Service, cfg *config.Config) *Ctrl {
 	templateID := cfg.Sandbox.DefaultTemplateID
 	if templateID == "" {
 		templateID = "base"
+	}
+	codeInterpreterTemplateID := cfg.Sandbox.CodeInterpreterTemplateID
+	if codeInterpreterTemplateID == "" {
+		codeInterpreterTemplateID = "code-interpreter-v1"
 	}
 	timeoutSeconds := cfg.Sandbox.DefaultTimeoutSeconds
 	if timeoutSeconds == 0 {
@@ -46,6 +51,7 @@ func New(svc *service.Service, cfg *config.Config) *Ctrl {
 		credentialBox:                box,
 		sandboxRuntime:               newSandboxRuntime(cfg.Sandbox),
 		defaultSandboxTemplateID:     templateID,
+		codeInterpreterTemplateID:    codeInterpreterTemplateID,
 		defaultSandboxTimeoutSeconds: timeoutSeconds,
 	}
 }
@@ -77,6 +83,11 @@ func (ctrl *Ctrl) RegisterRoutes(r *fox.Engine) {
 	api.GET("/workspaces/:workspaceID/preview/*previewPath", ctrl.WorkspaceFilePreview)
 	api.GET("/workspaces/:workspaceID/chat/messages", ctrl.WorkspaceChatMessages)
 	api.POST("/workspaces/:workspaceID/chat/messages", ctrl.SendWorkspaceChatMessage)
+	api.GET("/code-runner/sessions", ctrl.CodeRunnerSessions)
+	api.POST("/code-runner/sessions", ctrl.CreateCodeRunnerSession)
+	api.POST("/code-runner/sessions/:sessionID/connect", ctrl.ConnectCodeRunnerSession)
+	api.GET("/code-runner/sessions/:sessionID/runs", ctrl.CodeRuns)
+	api.POST("/code-runner/sessions/:sessionID/runs", ctrl.RunCode)
 	api.POST("/repositories/:repositoryID/open", ctrl.OpenRepository)
 	api.GET("/qiniu/credentials", ctrl.QiniuCredentialStatus)
 	api.PUT("/qiniu/credentials", ctrl.SaveQiniuCredential)

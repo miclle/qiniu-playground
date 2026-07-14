@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,6 +35,7 @@ type sandboxRuntime interface {
 	ReadFileStream(ctx context.Context, apiKey, sandboxID, endpoint, filePath string) (io.ReadCloser, error)
 	GetMetrics(ctx context.Context, apiKey, sandboxID, endpoint string, params sandboxMetricsParams) ([]sandboxRuntimeMetric, error)
 	RunAIChat(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeAIChatRequest) (*sandboxRuntimeAIChatResult, error)
+	RunCommand(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeCommandRequest) (*sandboxRuntimeCommandResult, error)
 	SetTimeout(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) error
 	Pause(ctx context.Context, apiKey, sandboxID, endpoint string) error
 }
@@ -151,6 +153,22 @@ type sandboxRuntimeAIChatResult struct {
 	Stderr   string
 	Error    string
 	Thought  string
+	ExitCode int
+}
+
+type sandboxRuntimeCommandRequest struct {
+	WorkspacePath string
+	Language      string
+	Code          string
+	Stdin         string
+	Envs          map[string]string
+	Timeout       time.Duration
+}
+
+type sandboxRuntimeCommandResult struct {
+	Stdout   string
+	Stderr   string
+	Error    string
 	ExitCode int
 }
 
@@ -506,6 +524,54 @@ func (r *qiniuSandboxRuntime) RunAIChat(ctx context.Context, apiKey, sandboxID, 
 	}, nil
 }
 
+func (r *qiniuSandboxRuntime) RunCommand(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeCommandRequest) (*sandboxRuntimeCommandResult, error) {
+	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, config.DefaultSandboxTimeoutSeconds)
+	if err != nil {
+		return nil, err
+	}
+	timeout := req.Timeout
+	if timeout == 0 {
+		timeout = time.Minute
+	}
+	envs := map[string]string{
+		"QINIU_PLAYGROUND_CODE_B64":          base64.StdEncoding.EncodeToString([]byte(req.Code)),
+		"QINIU_PLAYGROUND_STDIN_B64":         base64.StdEncoding.EncodeToString([]byte(req.Stdin)),
+		"QINIU_PLAYGROUND_CODE_WORKSPACE":    req.WorkspacePath,
+		"QINIU_PLAYGROUND_CODE_LANGUAGE":     req.Language,
+		"QINIU_PLAYGROUND_CODE_RUNNER_SCOPE": "code-runner",
+	}
+	for key, value := range req.Envs {
+		if value != "" {
+			envs[key] = value
+		}
+	}
+	result, err := sb.Commands().Run(
+		ctx,
+		codeRunnerCommand(req.Language),
+		qiniusb.WithTimeout(timeout),
+		qiniusb.WithEnvs(envs),
+	)
+	if err != nil {
+		return codeRunnerCommandError(ctx, err)
+	}
+	return &sandboxRuntimeCommandResult{
+		Stdout:   result.Stdout,
+		Stderr:   result.Stderr,
+		Error:    result.Error,
+		ExitCode: result.ExitCode,
+	}, nil
+}
+
+func codeRunnerCommandError(ctx context.Context, err error) (*sandboxRuntimeCommandResult, error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &sandboxRuntimeCommandResult{
+			Error:    "Execution timed out",
+			ExitCode: -1,
+		}, nil
+	}
+	return nil, err
+}
+
 type aiChatOutputFilter struct {
 	mu              sync.Mutex
 	onOutput        func(string)
@@ -857,6 +923,59 @@ func stripAIChatProviderMarker(output string) string {
 		filtered = append(filtered, line)
 	}
 	return strings.TrimSpace(strings.Join(filtered, "\n"))
+}
+
+func codeRunnerCommand(language string) string {
+	extension, runCommand := codeRunnerLanguageCommand(language)
+	if runCommand == "" {
+		return "printf 'unsupported language: %s\\n' \"$QINIU_PLAYGROUND_CODE_LANGUAGE\" >&2; exit 2"
+	}
+	return strings.Join([]string{
+		"set -eu",
+		`workspace="${QINIU_PLAYGROUND_CODE_WORKSPACE:-}"`,
+		`if [ -n "$workspace" ]; then`,
+		`  if mkdir -p "$workspace" 2>/dev/null; then`,
+		`    cd "$workspace"`,
+		`  else`,
+		`    fallback="${HOME:-/tmp}/qiniu-playground/$(basename "$workspace")"`,
+		`    mkdir -p "$fallback"`,
+		`    cd "$fallback"`,
+		`  fi`,
+		`fi`,
+		`tmpdir="$(mktemp -d)"`,
+		`trap 'rm -rf "$tmpdir"' EXIT`,
+		fmt.Sprintf(`printf '%%s' "$QINIU_PLAYGROUND_CODE_B64" | base64 -d > "$tmpdir/%s"`, extension),
+		`printf '%s' "$QINIU_PLAYGROUND_STDIN_B64" | base64 -d > "$tmpdir/stdin.txt"`,
+		runCommand,
+	}, "\n")
+}
+
+func codeRunnerLanguageCommand(language string) (string, string) {
+	switch language {
+	case "python":
+		return "main.py", `python3 "$tmpdir/main.py" < "$tmpdir/stdin.txt"`
+	case "javascript":
+		return "main.js", `node "$tmpdir/main.js" < "$tmpdir/stdin.txt"`
+	case "typescript":
+		return "main.ts", strings.Join([]string{
+			"if command -v tsx >/dev/null 2>&1; then",
+			`  tsx "$tmpdir/main.ts" < "$tmpdir/stdin.txt"`,
+			"elif command -v ts-node >/dev/null 2>&1; then",
+			`  ts-node "$tmpdir/main.ts" < "$tmpdir/stdin.txt"`,
+			"else",
+			`  printf 'TypeScript runtime not found: expected tsx or ts-node\n' >&2`,
+			"  exit 127",
+			"fi",
+		}, "\n")
+	case "r":
+		return "main.R", `Rscript "$tmpdir/main.R" < "$tmpdir/stdin.txt"`
+	case "java":
+		return "Main.java", `java "$tmpdir/Main.java" < "$tmpdir/stdin.txt"`
+	case "bash":
+		return "main.sh", `bash "$tmpdir/main.sh" < "$tmpdir/stdin.txt"`
+	default:
+		return "", ""
+	}
 }
 
 func cloneOrUpdateRepositoryCommand(req sandboxRuntimeRepositoryRequest, workspacePath string) string {

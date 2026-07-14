@@ -398,6 +398,7 @@ function Home({ page }: HomeProps) {
 
   const repositoryError = reposQuery.isError ? apiErrorMessage(reposQuery.error) : ''
   const workspaceError = workspacesQuery.isError ? apiErrorMessage(workspacesQuery.error) : ''
+  const repositoryCountLabel = reposQuery.isLoading ? 'Loading...' : `${repos.length} repositories`
 
   const workspaceDialog = (
     <Dialog.Root
@@ -613,65 +614,69 @@ function Home({ page }: HomeProps) {
   const workspacesPanel = (
     <>
       {!qiniuQuery.isLoading && !qiniuStatus?.configured ? (
-        <section className="mb-4 flex flex-col gap-3 rounded-md border p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">Sandbox API Key required</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Configure a Qiniu Sandbox API Key before creating repository workspaces.
-            </p>
-          </div>
-          <Button asChild size="2" className="w-fit no-underline">
-            <Link to="/credentials">Configure API key</Link>
-          </Button>
-        </section>
-      ) : null}
-      <section className="rounded-md border">
-        <div className="flex items-center justify-between border-b px-5 py-3">
-          <h2 className="text-sm font-semibold">Configured workspaces</h2>
-          <span className="text-xs text-muted-foreground">{workspaceRows.length} workspaces</span>
-        </div>
-        {workspaceError ? (
-          <div className="border-b bg-destructive/10 px-5 py-3 text-sm text-destructive">{workspaceError}</div>
-        ) : null}
-        {workspaceRows.length > 0 ? (
-          <div className="divide-y">
-            {workspaceRows.map((workspace) => (
-              <Link
-                key={workspace.id}
-                className="flex flex-col gap-3 px-5 py-3 text-sm text-foreground no-underline transition-colors hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 sm:flex-row sm:items-start sm:justify-between"
-                to={`/workspaces/${workspace.id}`}
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{workspace.name || workspace.repo_full_name || workspace.sandbox_id || 'Workspace'}</span>
-                  </div>
-                  {workspace.repo_full_name ? (
-                    <p className="mt-1 truncate text-xs text-muted-foreground">{workspace.repo_full_name}</p>
-                  ) : null}
-                  {workspace.workspace_path ? (
-                    <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{workspace.workspace_path}</p>
-                  ) : null}
-                </div>
-                <div className="grid gap-1 text-xs text-muted-foreground sm:min-w-56 sm:text-right">
-                  <span>Created {formatWorkspaceTime(workspace.created_at)}</span>
-                  <span>Updated {formatWorkspaceTime(workspace.updated_at)}</span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3 p-5 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-3">
-              <TerminalSquare className="h-4 w-4 shrink-0" />
-              <span>
-                {workspacesQuery.isLoading
-                  ? 'Loading workspaces...'
-                  : 'No workspaces yet. Create one now.'}
-              </span>
+        <Card asChild size="2" className="mb-4">
+          <section className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold">Sandbox API Key required</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Configure a Qiniu Sandbox API Key before creating repository workspaces.
+              </p>
             </div>
+            <Button asChild size="2" className="w-fit no-underline">
+              <Link to="/credentials">Configure API key</Link>
+            </Button>
+          </section>
+        </Card>
+      ) : null}
+      <Card asChild size="2">
+        <section>
+          <div className="flex items-center justify-between border-b pb-3">
+            <h2 className="text-sm font-semibold">Configured workspaces</h2>
+            <span className="text-xs text-muted-foreground">{workspaceRows.length} workspaces</span>
           </div>
-        )}
-      </section>
+          {workspaceError ? (
+            <div className="mt-3 rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">{workspaceError}</div>
+          ) : null}
+          {workspaceRows.length > 0 ? (
+            <div className="mt-3 divide-y">
+              {workspaceRows.map((workspace) => (
+                <Link
+                  key={workspace.id}
+                  className="flex flex-col gap-3 rounded-sm px-2 py-3 text-sm text-foreground no-underline transition-colors hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 sm:flex-row sm:items-start sm:justify-between"
+                  to={`/workspaces/${workspace.id}`}
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{workspace.name || workspace.repo_full_name || workspace.sandbox_id || 'Workspace'}</span>
+                    </div>
+                    {workspace.repo_full_name ? (
+                      <p className="mt-1 truncate text-xs text-muted-foreground">{workspace.repo_full_name}</p>
+                    ) : null}
+                    {workspace.workspace_path ? (
+                      <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{workspace.workspace_path}</p>
+                    ) : null}
+                  </div>
+                  <div className="grid gap-1 text-xs text-muted-foreground sm:min-w-56 sm:text-right">
+                    <span>Created {formatWorkspaceTime(workspace.created_at)}</span>
+                    <span>Updated {formatWorkspaceTime(workspace.updated_at)}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 pt-4 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+                <TerminalSquare className="h-4 w-4 shrink-0" />
+                <span>
+                  {workspacesQuery.isLoading
+                    ? 'Loading workspaces...'
+                    : 'No workspaces yet. Create one now.'}
+                </span>
+              </div>
+            </div>
+          )}
+        </section>
+      </Card>
     </>
   )
 
@@ -682,12 +687,43 @@ function Home({ page }: HomeProps) {
           <h2 className="text-sm font-semibold">GitHub repositories</h2>
           <p className="mt-1 text-xs text-muted-foreground">Repositories available for workspace creation.</p>
         </div>
-        <span className="text-xs text-muted-foreground">{repos.length} repositories</span>
+        <span className="text-xs text-muted-foreground">{repositoryCountLabel}</span>
       </div>
       {repositoryError ? (
         <div className="rounded-md border bg-destructive/10 px-5 py-3 text-sm text-destructive">{repositoryError}</div>
       ) : null}
-      {repos.length > 0 ? (
+      {reposQuery.isLoading ? (
+        <div className="overflow-x-auto" role="status" aria-label="Loading repositories">
+          <Table.Root variant="surface" size="2" className="min-w-[760px]">
+            <Table.Header>
+              <Table.Row>
+                <Table.ColumnHeaderCell>Repository</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Default branch</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Visibility</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell justify="end" aria-label="Actions" />
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {Array.from({ length: 5 }).map((_, index) => (
+                <Table.Row key={index} className="align-middle">
+                  <Table.RowHeaderCell>
+                    <span className="block h-4 w-56 animate-pulse rounded-sm bg-secondary" />
+                  </Table.RowHeaderCell>
+                  <Table.Cell>
+                    <span className="block h-4 w-28 animate-pulse rounded-sm bg-secondary" />
+                  </Table.Cell>
+                  <Table.Cell>
+                    <span className="block h-5 w-16 animate-pulse rounded-sm bg-secondary" />
+                  </Table.Cell>
+                  <Table.Cell justify="end">
+                    <span className="ml-auto block h-8 w-8 animate-pulse rounded-sm bg-secondary" />
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table.Root>
+        </div>
+      ) : repos.length > 0 ? (
         <div className="overflow-x-auto">
           <Table.Root variant="surface" size="2" className="min-w-[760px]">
             <Table.Header>

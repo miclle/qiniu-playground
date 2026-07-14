@@ -117,6 +117,64 @@ func TestAIChatCommandPrefersClaudeThenCodexAndFallsBackToExistingDirectory(t *t
 	}
 }
 
+func TestCodeRunnerCommandUsesEnvEncodedPythonScript(t *testing.T) {
+	got := codeRunnerCommand("python")
+	for _, want := range []string{
+		`workspace="${QINIU_PLAYGROUND_CODE_WORKSPACE:-}"`,
+		`fallback="${HOME:-/tmp}/qiniu-playground/$(basename "$workspace")"`,
+		`printf '%s' "$QINIU_PLAYGROUND_CODE_B64" | base64 -d > "$tmpdir/main.py"`,
+		`printf '%s' "$QINIU_PLAYGROUND_STDIN_B64" | base64 -d > "$tmpdir/stdin.txt"`,
+		`python3 "$tmpdir/main.py" < "$tmpdir/stdin.txt"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("codeRunnerCommand() missing %q in %q", want, got)
+		}
+	}
+	for _, reject := range []string{"$QINIU_PLAYGROUND_CODE ", "eval", "python3 -c"} {
+		if strings.Contains(got, reject) {
+			t.Fatalf("codeRunnerCommand() should not execute user code through %q: %q", reject, got)
+		}
+	}
+}
+
+func TestCodeRunnerCommandSupportsE2BLanguages(t *testing.T) {
+	tests := []struct {
+		language string
+		file     string
+		command  string
+	}{
+		{"python", "main.py", `python3 "$tmpdir/main.py"`},
+		{"javascript", "main.js", `node "$tmpdir/main.js"`},
+		{"typescript", "main.ts", `tsx "$tmpdir/main.ts"`},
+		{"r", "main.R", `Rscript "$tmpdir/main.R"`},
+		{"java", "Main.java", `java "$tmpdir/Main.java"`},
+		{"bash", "main.sh", `bash "$tmpdir/main.sh"`},
+	}
+	for _, tt := range tests {
+		got := codeRunnerCommand(tt.language)
+		if !strings.Contains(got, `base64 -d > "$tmpdir/`+tt.file+`"`) {
+			t.Fatalf("codeRunnerCommand(%q) missing file %q in %q", tt.language, tt.file, got)
+		}
+		if !strings.Contains(got, tt.command) {
+			t.Fatalf("codeRunnerCommand(%q) missing command %q in %q", tt.language, tt.command, got)
+		}
+	}
+}
+
+func TestCodeRunnerCommandErrorReturnsTimeoutResult(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+	<-ctx.Done()
+
+	result, err := codeRunnerCommandError(ctx, context.DeadlineExceeded)
+	if err != nil {
+		t.Fatalf("codeRunnerCommandError() error = %v, want nil", err)
+	}
+	if result == nil || result.Error != "Execution timed out" || result.ExitCode != -1 {
+		t.Fatalf("result = %+v, want timeout result", result)
+	}
+}
+
 func TestStripAIChatProviderMarker(t *testing.T) {
 	got := stripAIChatProviderMarker("__qiniu_playground_provider__:codex\nhello\n")
 	if got != "hello" {

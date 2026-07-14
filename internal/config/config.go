@@ -41,9 +41,10 @@ type GitHubConfig struct {
 
 // SandboxConfig contains Qiniu Sandbox defaults.
 type SandboxConfig struct {
-	Endpoint              string `mapstructure:"endpoint"`
-	DefaultTemplateID     string `mapstructure:"default_template_id"`
-	DefaultTimeoutSeconds int32  `mapstructure:"default_timeout_seconds"`
+	Endpoint                  string `mapstructure:"endpoint"`
+	DefaultTemplateID         string `mapstructure:"default_template_id"`
+	CodeInterpreterTemplateID string `mapstructure:"code_interpreter_template_id"`
+	DefaultTimeoutSeconds     int32  `mapstructure:"default_timeout_seconds"`
 }
 
 // Load reads configuration from the given file path.
@@ -85,6 +86,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Sandbox.DefaultTemplateID == "" {
 		cfg.Sandbox.DefaultTemplateID = "base"
+	}
+	if cfg.Sandbox.CodeInterpreterTemplateID == "" {
+		cfg.Sandbox.CodeInterpreterTemplateID = "code-interpreter-v1"
 	}
 	if cfg.Sandbox.DefaultTimeoutSeconds == 0 {
 		cfg.Sandbox.DefaultTimeoutSeconds = DefaultSandboxTimeoutSeconds

@@ -21,6 +21,7 @@ github:
 sandbox:
   endpoint: "${QINIU_SANDBOX_ENDPOINT:-}"
   default_template_id: "${QINIU_SANDBOX_TEMPLATE_ID:-base}"
+  code_interpreter_template_id: "${QINIU_CODE_INTERPRETER_TEMPLATE_ID:-code-interpreter-v1}"
   default_timeout_seconds: 86400
 
 # Environment variables are supported:

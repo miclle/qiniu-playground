@@ -59,6 +59,8 @@ tests, documentation, and a focused commit.
 - Sandbox create/connect through `github.com/qiniu/go-sdk/v7/sandbox`.
 - Repository open flow that clones code into a sandbox and starts code-server.
 - Browser terminal powered by sandbox PTY and xterm.js.
+- Code Runner sessions backed by the `code-interpreter-v1` sandbox template,
+  with multi-language execution history and stdout/stderr result display.
 
 ## Quick Start
 
@@ -172,6 +174,7 @@ github:
 sandbox:
   endpoint: "${QINIU_SANDBOX_ENDPOINT:-}"
   default_template_id: "${QINIU_SANDBOX_TEMPLATE_ID:-base}"
+  code_interpreter_template_id: "${QINIU_CODE_INTERPRETER_TEMPLATE_ID:-code-interpreter-v1}"
   default_timeout_seconds: 86400
 ```
 
@@ -245,6 +248,20 @@ Both can be changed in `cmd/playground/config.local.yaml`.
 The web terminal uses xterm.js and sends raw terminal input over the PTY
 WebSocket. Browser WebSocket upgrades are accepted only from the same host as
 the application server.
+
+## Code Runner API
+
+Code Runner creates dedicated interpreter sandboxes using
+`sandbox.code_interpreter_template_id`, which defaults to `code-interpreter-v1`.
+Supported runtimes are Python, JavaScript, TypeScript, R, Java, and Bash.
+
+```text
+GET  /api/v1/code-runner/sessions                   List Code Runner sessions
+POST /api/v1/code-runner/sessions                   Create a Code Runner sandbox
+POST /api/v1/code-runner/sessions/:sessionID/connect Reconnect a session sandbox
+GET  /api/v1/code-runner/sessions/:sessionID/runs   List recent code runs
+POST /api/v1/code-runner/sessions/:sessionID/runs   Run code and store the result
+```
 
 ## Workspace API
 

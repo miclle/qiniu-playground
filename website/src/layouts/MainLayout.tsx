@@ -1,11 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { Button, IconButton } from '@radix-ui/themes'
-import { Code2, GitBranch, KeyRound, Layers, LogOut, PanelsTopLeft, Server } from 'lucide-react'
+import { Code2, GitBranch, KeyRound, Layers, LogOut, PanelsTopLeft, PlaySquare, Server } from 'lucide-react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { currentUser, logout } from 'src/api/auth'
 
 const navigationItems = [
   { label: 'Workspaces', to: '/workspaces', icon: PanelsTopLeft },
+  { label: 'Code Runner', to: '/code-runner', icon: PlaySquare },
   { label: 'Codebases', to: '/codebases', icon: Code2 },
   { label: 'Credentials', to: '/credentials', icon: KeyRound },
   { label: 'Templates', to: '/templates', icon: Layers },

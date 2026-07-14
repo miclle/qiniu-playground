@@ -174,6 +174,55 @@ func (WorkspaceChatMessage) TableName() string {
 	return "workspace_chat_messages"
 }
 
+// CodeRunnerSession records a code interpreter sandbox owned by an account.
+type CodeRunnerSession struct {
+	ID            string         `gorm:"column:id;primaryKey;size:64"                                      json:"id"`
+	CreatedAt     time.Time      `gorm:"column:created_at"                                                 json:"created_at"`
+	UpdatedAt     time.Time      `gorm:"column:updated_at"                                                 json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `gorm:"column:deleted_at;index"                                           json:"deleted_at,omitempty"`
+	AccountID     string         `gorm:"column:account_id;size:64;not null;index"                          json:"account_id"`
+	Name          string         `gorm:"column:name;size:255;not null"                                     json:"name"`
+	Region        string         `gorm:"column:region;size:255;not null"                                  json:"region"`
+	SandboxID     string         `gorm:"column:sandbox_id;size:255;index"                                  json:"sandbox_id,omitempty"`
+	TemplateID    string         `gorm:"column:template_id;size:255;not null"                             json:"template_id"`
+	State         string         `gorm:"column:state;size:64"                                             json:"state,omitempty"`
+	Endpoint      string         `gorm:"column:endpoint;size:1024"                                        json:"endpoint,omitempty"`
+	WorkspacePath string         `gorm:"column:workspace_path;size:1024"                                  json:"workspace_path,omitempty"`
+	Account       Account        `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"-"`
+}
+
+// TableName returns the database table name for CodeRunnerSession.
+func (CodeRunnerSession) TableName() string {
+	return "code_runner_sessions"
+}
+
+// CodeRun stores one code execution result.
+type CodeRun struct {
+	ID         string            `gorm:"column:id;primaryKey;size:64"                                        json:"id"`
+	CreatedAt  time.Time         `gorm:"column:created_at;index;index:idx_code_runs_session_time,priority:2,sort:desc" json:"created_at"`
+	UpdatedAt  time.Time         `gorm:"column:updated_at"                                                   json:"updated_at"`
+	DeletedAt  gorm.DeletedAt    `gorm:"column:deleted_at;index"                                             json:"deleted_at,omitempty"`
+	AccountID  string            `gorm:"column:account_id;size:64;not null;index"                            json:"account_id"`
+	SessionID  string            `gorm:"column:session_id;size:64;not null;index:idx_code_runs_session_time,priority:1" json:"session_id"`
+	SandboxID  string            `gorm:"column:sandbox_id;size:255;index"                                    json:"sandbox_id,omitempty"`
+	Language   string            `gorm:"column:language;size:32;not null"                                    json:"language"`
+	Code       string            `gorm:"column:code;type:text;not null"                                      json:"code"`
+	Stdin      string            `gorm:"column:stdin;type:text"                                              json:"stdin,omitempty"`
+	Stdout     string            `gorm:"column:stdout;type:text"                                             json:"stdout,omitempty"`
+	Stderr     string            `gorm:"column:stderr;type:text"                                             json:"stderr,omitempty"`
+	Error      string            `gorm:"column:error;type:text"                                              json:"error,omitempty"`
+	ExitCode   int               `gorm:"column:exit_code"                                                    json:"exit_code"`
+	DurationMS int64             `gorm:"column:duration_ms"                                                  json:"duration_ms"`
+	Metadata   SandboxMetadata   `gorm:"column:metadata;type:text"                                           json:"metadata,omitempty"`
+	Session    CodeRunnerSession `gorm:"foreignKey:SessionID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"   json:"-"`
+	Account    Account           `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"   json:"-"`
+}
+
+// TableName returns the database table name for CodeRun.
+func (CodeRun) TableName() string {
+	return "code_runs"
+}
+
 // QiniuCredential stores encrypted Qiniu Cloud credentials for an account.
 type QiniuCredential struct {
 	ID                  string         `gorm:"column:id;primaryKey;size:64"                                      json:"id"`

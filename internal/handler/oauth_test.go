@@ -35,37 +35,44 @@ type fakeGitHubApp struct {
 }
 
 type fakeSandboxRuntime struct {
-	lastAPIKey             string
-	lastCreateRequest      sandboxRuntimeCreateRequest
-	lastWorkspaceRequest   sandboxRuntimeWorkspaceRequest
-	lastPrepareRequest     sandboxRuntimeRepositoryRequest
-	lastTemplatesEndpoint  string
-	lastListEndpoint       string
-	lastConnectEndpoint    string
-	lastPTYEndpoint        string
-	lastFilesystemEndpoint string
-	lastFilesystemPath     string
-	lastMetricsEndpoint    string
-	lastMetricsParams      sandboxMetricsParams
-	lastAIChatEndpoint     string
-	lastAIChatRequest      sandboxRuntimeAIChatRequest
-	lastTimeoutSandboxID   string
-	lastTimeoutEndpoint    string
-	lastTimeoutSeconds     int32
-	lastPauseEndpoint      string
-	lastPausedSandboxID    string
-	lastRepo               string
-	lastPTYInput           string
-	lastPTYSize            sandboxPTYSize
-	onPTYData              func([]byte)
-	templates              []sandboxRuntimeTemplate
-	listSandboxes          []sandboxRuntimeListedSandbox
-	connectErr             error
-	readFileErr            error
-	aiChatResult           *sandboxRuntimeAIChatResult
-	aiChatErr              error
-	aiChatNilResult        bool
-	aiChatOutputChunks     []string
+	lastAPIKey              string
+	lastCreateRequest       sandboxRuntimeCreateRequest
+	lastWorkspaceRequest    sandboxRuntimeWorkspaceRequest
+	lastPrepareRequest      sandboxRuntimeRepositoryRequest
+	lastTemplatesEndpoint   string
+	lastListEndpoint        string
+	lastConnectEndpoint     string
+	lastPTYEndpoint         string
+	lastFilesystemEndpoint  string
+	lastFilesystemPath      string
+	lastMetricsEndpoint     string
+	lastMetricsParams       sandboxMetricsParams
+	lastAIChatEndpoint      string
+	lastAIChatRequest       sandboxRuntimeAIChatRequest
+	lastCommandEndpoint     string
+	lastCommandRequest      sandboxRuntimeCommandRequest
+	lastTimeoutSandboxID    string
+	lastTimeoutEndpoint     string
+	lastTimeoutSeconds      int32
+	lastPauseEndpoint       string
+	lastPausedSandboxID     string
+	lastRepo                string
+	lastPTYInput            string
+	lastPTYSize             sandboxPTYSize
+	onPTYData               func([]byte)
+	templates               []sandboxRuntimeTemplate
+	listSandboxes           []sandboxRuntimeListedSandbox
+	connectErr              error
+	readFileErr             error
+	aiChatResult            *sandboxRuntimeAIChatResult
+	aiChatErr               error
+	aiChatNilResult         bool
+	aiChatOutputChunks      []string
+	commandResult           *sandboxRuntimeCommandResult
+	commandErr              error
+	workspaceErr            error
+	onPrepareWorkspace      func()
+	lastWorkspaceContextErr error
 }
 
 type fakePTYSession struct {
@@ -163,6 +170,13 @@ func (f *fakeSandboxRuntime) Connect(ctx context.Context, apiKey, sandboxID stri
 func (f *fakeSandboxRuntime) PrepareWorkspace(ctx context.Context, apiKey string, req sandboxRuntimeWorkspaceRequest) (*sandboxRuntimeWorkspace, error) {
 	f.lastAPIKey = apiKey
 	f.lastWorkspaceRequest = req
+	if f.onPrepareWorkspace != nil {
+		f.onPrepareWorkspace()
+	}
+	f.lastWorkspaceContextErr = ctx.Err()
+	if f.workspaceErr != nil {
+		return nil, f.workspaceErr
+	}
 	workspacePath := req.WorkspacePath
 	if workspacePath == "" {
 		workspacePath = "/workspace"
@@ -268,6 +282,23 @@ func (f *fakeSandboxRuntime) RunAIChat(ctx context.Context, apiKey, sandboxID, e
 	}, nil
 }
 
+func (f *fakeSandboxRuntime) RunCommand(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeCommandRequest) (*sandboxRuntimeCommandResult, error) {
+	f.lastAPIKey = apiKey
+	f.lastCommandEndpoint = endpoint
+	f.lastCommandRequest = req
+	if f.commandErr != nil {
+		return nil, f.commandErr
+	}
+	if f.commandResult != nil {
+		return f.commandResult, nil
+	}
+	return &sandboxRuntimeCommandResult{
+		Stdout:   "hello from code\n",
+		Stderr:   "",
+		ExitCode: 0,
+	}, nil
+}
+
 func (f *fakeSandboxRuntime) SetTimeout(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) error {
 	f.lastAPIKey = apiKey
 	f.lastTimeoutSandboxID = sandboxID
@@ -344,6 +375,8 @@ func newTestController(t *testing.T) *Ctrl {
 		&entity.GitHubRepository{},
 		&entity.Workspace{},
 		&entity.WorkspaceChatMessage{},
+		&entity.CodeRunnerSession{},
+		&entity.CodeRun{},
 		&entity.QiniuCredential{},
 		&entity.SandboxSession{},
 	); err != nil {
