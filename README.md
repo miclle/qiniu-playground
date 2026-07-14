@@ -22,7 +22,7 @@ deployment is typically a single executable plus a database.
 
 - React 19, TypeScript 6, Vite 8, Tailwind CSS 4
 - React Router v7, React Query v5
-- [shadcn/ui](https://ui.shadcn.com/) v4 component library
+- [Radix Themes](https://www.radix-ui.com/themes) component library
 - Vitest 4 for unit testing
 
 ## Requirements
@@ -128,7 +128,7 @@ task update-tools   # Install/update reflex, staticcheck, golangci-lint
 │   ├── assets_production.go        → Prod: //go:embed build/*
 │   └── src/
 │       ├── api/                    → API client (Axios)
-│       ├── components/ui/          → shadcn/ui components
+│       ├── components/             → Domain-specific React components
 │       ├── context/                → React context providers
 │       ├── hooks/                  → Custom React hooks
 │       ├── layouts/                → Page layout components

@@ -1,9 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
+import { Button, IconButton } from '@radix-ui/themes'
 import { Code2, GitBranch, KeyRound, Layers, LogOut, PanelsTopLeft, Server } from 'lucide-react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { currentUser, logout } from 'src/api/auth'
-import { Button, buttonVariants } from 'src/components/ui/button'
-import { cn } from 'src/lib/utils'
 
 const navigationItems = [
   { label: 'Workspaces', to: '/workspaces', icon: PanelsTopLeft },
@@ -67,25 +66,25 @@ function MainLayout() {
                 <p className="truncate text-sm font-medium leading-none">{user.login}</p>
                 <p className="mt-1 truncate text-xs text-muted-foreground">{user.name || 'GitHub account'}</p>
               </div>
-              <Button
+              <IconButton
                 type="button"
                 aria-label="Sign out"
                 variant="outline"
-                size="icon"
+                color="gray"
+                size="2"
                 className="shrink-0 text-muted-foreground hover:text-foreground"
                 onClick={handleLogout}
               >
                 <LogOut className="h-4 w-4" />
-              </Button>
+              </IconButton>
             </div>
           ) : (
-            <a
-              className={cn(buttonVariants({ variant: 'outline', size: 'lg' }), 'gap-2 no-underline')}
-              href="/login"
-            >
-              <GitBranch className="h-4 w-4" />
-              Sign in
-            </a>
+            <Button asChild variant="outline" color="gray" size="2" className="gap-2 no-underline">
+              <a href="/login">
+                <GitBranch className="h-4 w-4" />
+                Sign in
+              </a>
+            </Button>
           )}
         </div>
       </aside>

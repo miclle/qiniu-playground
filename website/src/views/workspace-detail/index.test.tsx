@@ -433,13 +433,11 @@ test('renders a workspace workbench with assistant, files, and terminal panels',
     expect(fetchSandboxFiles).toHaveBeenCalledWith('sbox_456', '/workspace')
   })
 
-  const terminalTab = Array.from(container.querySelectorAll('button')).find((button) => (
-    button.textContent === 'Terminal'
-  ))
+  const terminalTab = container.querySelector('[role="tab"][aria-label="Terminal"]') as HTMLElement | null
   expect(terminalTab).toBeTruthy()
 
   await act(async () => {
-    terminalTab?.click()
+    terminalTab?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
   })
 
   await waitFor(() => {
@@ -448,13 +446,11 @@ test('renders a workspace workbench with assistant, files, and terminal panels',
   expect(container.querySelectorAll('[data-testid="terminal-panel"]')).toHaveLength(1)
 
   const fileFetchCountAfterTerminalOpen = fetchSandboxFiles.mock.calls.length
-  const filesTab = Array.from(container.querySelectorAll('button')).find((button) => (
-    button.textContent === 'Files'
-  ))
+  const filesTab = container.querySelector('button[aria-label="Files"]') as HTMLButtonElement | null
   expect(filesTab).toBeTruthy()
 
   await act(async () => {
-    filesTab?.click()
+    filesTab?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
   })
 
   expect(fetchSandboxFiles).toHaveBeenCalledTimes(fileFetchCountAfterTerminalOpen)
@@ -462,7 +458,7 @@ test('renders a workspace workbench with assistant, files, and terminal panels',
   expect(container.querySelectorAll('[data-testid="terminal-panel"]')).toHaveLength(1)
 
   await act(async () => {
-    terminalTab?.click()
+    terminalTab?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
   })
 
   expect(container.textContent).toContain('Terminal for sbox_456 at /workspace/qiniu__vision-tube active true')
@@ -561,6 +557,13 @@ test('renders AI Chat messages as Markdown', async () => {
   expect(userBubble?.parentElement?.className).toContain('justify-end')
   expect(userBubble?.className).toContain('w-fit')
   expect(userBubble?.className).toContain('max-w-[calc(100%-2rem)]')
+
+  const assistantBlock = Array.from(container.querySelectorAll('[data-chat-role="assistant"]')).find((element) => (
+    element.textContent?.includes('Done. Created /home/user/snake.html.')
+  ))
+  expect(assistantBlock?.parentElement?.className).toContain('w-full')
+  expect(assistantBlock?.className).toContain('flex-1')
+  expect(assistantBlock?.className).not.toContain('mr-6')
 })
 
 test('resizes workspace columns with a 300px minimum', async () => {
@@ -1064,13 +1067,11 @@ test('loads sandbox metrics from the monitor tab', async () => {
   })
   expect(fetchSandboxMetrics).not.toHaveBeenCalled()
 
-  const monitorTab = Array.from(container.querySelectorAll('button')).find((button) => (
-    button.textContent === 'Monitor'
-  ))
+  const monitorTab = container.querySelector('button[aria-label="Monitor"]') as HTMLButtonElement | null
   expect(monitorTab).toBeTruthy()
 
   await act(async () => {
-    monitorTab?.click()
+    monitorTab?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }))
   })
 
   await waitFor(() => {

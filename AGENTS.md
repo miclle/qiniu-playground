@@ -9,7 +9,7 @@ A Go + React single-page application template that compiles into a single binary
 ## Tech Stack
 
 - Backend: Go 1.26 + `fox-gonic/fox` + GORM + PostgreSQL (default) / MySQL
-- Frontend: React 19 + TypeScript 6 + Vite 8 + Tailwind CSS 4 + shadcn/ui
+- Frontend: React 19 + TypeScript 6 + Vite 8 + Tailwind CSS 4 + Radix Themes
   - React Router v7 (routing)
   - React Query v5 (server state)
   - Axios (HTTP client)
@@ -53,7 +53,6 @@ website/                      # Embedded SPA (frontend + go:embed glue)
   ├── tsconfig*.json
   ├── eslint.config.js
   ├── vitest.config.ts
-  ├── components.json         #   shadcn configuration
   ├── index.html
   ├── public/
   ├── build/                  #   Vite build output (embedded)
@@ -65,7 +64,7 @@ website/                      # Embedded SPA (frontend + go:embed glue)
       ├── api/
       ├── types/
       ├── views/
-      ├── components/ (includes ui/ by shadcn)
+      ├── components/
       ├── layouts/
       ├── hooks/
       ├── context/
@@ -91,12 +90,12 @@ scripts/                      # Shell helpers invoked by Taskfile (build, check,
 - API calls go in `website/src/api/`
 - Type definitions go in `website/src/types/`
 - Pages go in `website/src/views/`
-- Use shadcn/ui components from `website/src/components/ui/` for shared interactive primitives such as buttons, dialogs, inputs, selects, popovers, command palettes, menus, tabs, switches, labels, and tables
-- Do not hand-roll dropdowns, modal dialogs, or form controls in page files when a shadcn/ui primitive exists; add the missing shadcn component first, then compose domain-specific UI around it
-- Native `<button>`, `<input>`, and `<select>` elements are disallowed by ESLint in page and layout files; use `src/components/ui/button`, `src/components/ui/input`, and `src/components/ui/select`
-- For links that visually behave like buttons, use `buttonVariants` from `src/components/ui/button` instead of duplicating button classes
-- Default form controls and text buttons use a 36px height (`h-9`); do not override control heights in page files unless a component variant explicitly requires it
-- Tailwind classes should customize layout and product-specific composition around shared components, not replace shared component behavior
+- Use Radix Themes directly from `@radix-ui/themes` for shared interactive primitives such as buttons, dialogs, inputs, selects, popovers, menus, tabs, switches, labels, and tables
+- Do not hand-roll dropdowns, modal dialogs, or form controls in page files when a Radix Themes primitive exists; compose domain-specific UI around Radix components instead
+- Native `<button>`, `<input>`, and `<select>` elements are disallowed by ESLint in page and layout files; use Radix Themes `Button`, `TextField`, `TextArea`, and `Select` primitives instead
+- For links that visually behave like buttons, use Radix Themes `Button asChild`
+- Default form controls and text buttons should use Radix Themes sizing; do not override control heights in page files unless the interaction explicitly requires it
+- Tailwind classes should customize layout and product-specific composition around Radix components, not replace shared component behavior
 
 ### Single Binary Embedding
 

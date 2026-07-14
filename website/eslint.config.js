@@ -33,15 +33,15 @@ export default tseslint.config(
         'error',
         {
           selector: "JSXElement[openingElement.name.name='button']",
-          message: 'Use Button from src/components/ui/button instead of a native <button> in page and layout files.',
+          message: 'Use Button from @radix-ui/themes instead of a native <button> in page and layout files.',
         },
         {
           selector: "JSXElement[openingElement.name.name='input']",
-          message: 'Use Input from src/components/ui/input instead of a native <input> in page and layout files.',
+          message: 'Use TextField from @radix-ui/themes instead of a native <input> in page and layout files.',
         },
         {
           selector: "JSXElement[openingElement.name.name='select']",
-          message: 'Use Select from src/components/ui/select instead of a native <select> in page and layout files.',
+          message: 'Use Select from @radix-ui/themes instead of a native <select> in page and layout files.',
         },
       ],
     },

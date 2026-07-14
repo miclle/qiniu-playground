@@ -1,4 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
+import { Badge, Button, Card, Dialog, Flex, IconButton, Inset, Tabs, TextArea } from '@radix-ui/themes'
 import type { AxiosError } from 'axios'
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent, PointerEvent, ReactNode } from 'react'
@@ -36,7 +37,7 @@ import { qiniuCredentialStatus } from 'src/api/qiniu'
 import { streamWorkspaceChatMessage, workspaceChatMessages } from 'src/api/workspace-chat'
 import type { WorkspaceChatMessage } from 'src/api/workspace-chat'
 import {
-  connectWorkspace,
+  connectWorkspace as connectWorkspaceSession,
   heartbeatWorkspace,
   pauseWorkspaceSandbox,
   workspaces as fetchWorkspaces,
@@ -44,33 +45,7 @@ import {
 import type { Workspace } from 'src/api/workspaces'
 import { sandboxMetrics } from 'src/api/sandboxes'
 import type { SandboxMetric } from 'src/api/sandboxes'
-import { Button, buttonVariants } from 'src/components/ui/button'
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupText,
-  InputGroupTextarea,
-} from 'src/components/ui/input-group'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from 'src/components/ui/tabs'
 import { WorkspaceFileBrowser } from 'src/components/WorkspaceFileBrowser'
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from 'src/components/ui/dialog'
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from 'src/components/ui/sheet'
 import { cn } from 'src/lib/utils'
 import { queryClient } from 'src/lib/query-client'
 
@@ -293,10 +268,10 @@ function MonitorMetricCard({
   percent: number
 }) {
   return (
-    <div className="rounded-md border bg-background p-4">
+    <Card size="2">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-sm font-medium">
-          <span className="flex h-8 w-8 items-center justify-center rounded-md border bg-secondary/50 text-muted-foreground">
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground">
             {icon}
           </span>
           {label}
@@ -310,7 +285,7 @@ function MonitorMetricCard({
         />
       </div>
       <p className="mt-3 truncate text-xs text-muted-foreground">{detail}</p>
-    </div>
+    </Card>
   )
 }
 
@@ -563,30 +538,30 @@ function SandboxMonitor({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-secondary/20">
       <div className="grid gap-4 border-b bg-background p-4 md:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-md border bg-background p-4">
+        <Card size="2">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Activity className="h-4 w-4 text-emerald-600" />
             Runtime
           </div>
           <p className="mt-3 text-2xl font-semibold">{workspace.state || 'unknown'}</p>
           <p className="mt-2 truncate text-xs text-muted-foreground">{workspace.sandbox_id || 'Sandbox pending'}</p>
-        </div>
+        </Card>
         <MonitorMetricCard
-          icon={<Cpu className="h-4 w-4" />}
+          icon={<Cpu className="h-4 w-4 text-orange-500" />}
           label="CPU"
           value={formatPercent(cpuPercent)}
           detail={`${latest?.cpu_count || '-'} vCPU · latest ${formatMetricClock(latest)}`}
           percent={cpuPercent}
         />
         <MonitorMetricCard
-          icon={<Gauge className="h-4 w-4" />}
+          icon={<Gauge className="h-4 w-4 text-slate-500" />}
           label="Memory"
           value={formatPercent(memoryPercent)}
           detail={`${bytesToGiB(latest?.mem_used)} / ${bytesToGiB(latest?.mem_total)}`}
           percent={memoryPercent}
         />
         <MonitorMetricCard
-          icon={<HardDrive className="h-4 w-4" />}
+          icon={<HardDrive className="h-4 w-4 text-teal-600" />}
           label="Disk"
           value={formatPercent(diskPercent)}
           detail={`${bytesToGiB(latest?.disk_used)} / ${bytesToGiB(latest?.disk_total)}`}
@@ -641,6 +616,7 @@ function SandboxMonitor({
 function WorkspaceDetail() {
   const { workspaceId } = useParams()
   const [dismissedMissingWorkspaceID, setDismissedMissingWorkspaceID] = useState('')
+  const [workspaceInfoOpen, setWorkspaceInfoOpen] = useState(false)
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab>('files')
   const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>(initialTerminalSessions)
   const [nextTerminalNumber, setNextTerminalNumber] = useState(2)
@@ -688,14 +664,22 @@ function WorkspaceDetail() {
       if (!workspace?.id) {
         throw new Error('workspace id is required')
       }
-      return connectWorkspace(workspace.id, recreate ? { recreate: true } : undefined)
+      return connectWorkspaceSession(workspace.id, recreate ? { recreate: true } : undefined)
     },
     onSuccess: (response) => {
       setDismissedMissingWorkspaceID('')
       updateWorkspaceCache(response.data)
     },
   })
-  const connectedWorkspace = connectWorkspaceMutation.data?.data
+  const {
+    data: connectWorkspaceData,
+    error: connectWorkspaceError,
+    isPending: connectWorkspacePending,
+    mutate: connectWorkspace,
+    reset: resetConnectWorkspace,
+    variables: connectWorkspaceVariables,
+  } = connectWorkspaceMutation
+  const connectedWorkspace = connectWorkspaceData?.data
   const monitorSandboxID = connectedWorkspace?.sandbox_id ?? workspace?.sandbox_id
   const metricsQuery = useQuery({
     queryKey: ['sandbox-metrics', monitorSandboxID],
@@ -706,7 +690,7 @@ function WorkspaceDetail() {
       const end = Math.floor(Date.now() / 1000)
       return sandboxMetrics(monitorSandboxID, { start: end - 30 * 60, end })
     },
-    enabled: Boolean(monitorSandboxID && workbenchTab === 'monitor' && !connectWorkspaceMutation.isPending),
+    enabled: Boolean(monitorSandboxID && workbenchTab === 'monitor' && !connectWorkspacePending),
     refetchInterval: workbenchTab === 'monitor' ? 15_000 : false,
     retry: false,
   })
@@ -788,7 +772,7 @@ function WorkspaceDetail() {
       return
     }
     previousWorkspaceIDRef.current = workspaceId
-    connectWorkspaceMutation.reset()
+    resetConnectWorkspace()
     setDismissedMissingWorkspaceID('')
     setWorkbenchTab('files')
     setTerminalSessions(initialTerminalSessions())
@@ -798,7 +782,7 @@ function WorkspaceDetail() {
     setChatStreamStatus('')
     setChatStreamingContent('')
     setChatStreaming(false)
-  }, [connectWorkspaceMutation.reset, workspaceId])
+  }, [resetConnectWorkspace, workspaceId])
 
   useEffect(() => () => {
     chatAbortControllerRef.current?.abort()
@@ -914,16 +898,16 @@ function WorkspaceDetail() {
     if (
       !workspace?.id ||
       connectedWorkspace?.id === workspace.id ||
-      connectWorkspaceMutation.error ||
-      connectWorkspaceMutation.isPending
+      connectWorkspaceError ||
+      connectWorkspacePending
     ) {
       return
     }
-    connectWorkspaceMutation.mutate({})
+    connectWorkspace({})
   }, [
-    connectWorkspaceMutation.error,
-    connectWorkspaceMutation.isPending,
-    connectWorkspaceMutation.mutate,
+    connectWorkspaceError,
+    connectWorkspacePending,
+    connectWorkspace,
     connectedWorkspace?.id,
     workspace?.id,
   ])
@@ -931,7 +915,7 @@ function WorkspaceDetail() {
   useEffect(() => {
     const activeWorkspaceID = workspace?.id
     const activeSandboxID = connectedWorkspace?.sandbox_id ?? workspace?.sandbox_id
-    if (!activeWorkspaceID || !activeSandboxID || connectWorkspaceMutation.isPending) {
+    if (!activeWorkspaceID || !activeSandboxID || connectWorkspacePending) {
       return undefined
     }
 
@@ -987,7 +971,7 @@ function WorkspaceDetail() {
       window.removeEventListener('pagehide', handlePageHide)
     }
   }, [
-    connectWorkspaceMutation.isPending,
+    connectWorkspacePending,
     connectedWorkspace?.sandbox_id,
     workspace?.id,
     workspace?.sandbox_id,
@@ -1048,10 +1032,12 @@ function WorkspaceDetail() {
           <p className="mt-2 text-sm text-muted-foreground">
             This workspace may have been removed or belongs to another account.
           </p>
-          <Link className={cn(buttonVariants({ variant: 'outline' }), 'mt-5 no-underline')} to="/workspaces">
-            <ArrowLeft className="h-4 w-4" />
-            Back to workspaces
-          </Link>
+          <Button asChild variant="outline" color="gray" className="mt-5 no-underline">
+            <Link to="/workspaces">
+              <ArrowLeft className="h-4 w-4" />
+              Back to workspaces
+            </Link>
+          </Button>
         </section>
       </div>
     )
@@ -1061,10 +1047,10 @@ function WorkspaceDetail() {
   const title = workspaceTitle(currentWorkspace)
   const repoURL = githubRepositoryURL(currentWorkspace.repo_full_name)
   const metadataJSON = JSON.stringify(metadata(currentWorkspace), null, 2)
-  const reconnecting = connectWorkspaceMutation.isPending
-  const creatingSandbox = reconnecting && (connectWorkspaceMutation.variables?.recreate || !currentWorkspace?.sandbox_id)
-  const connectError = reconnecting ? null : connectWorkspaceMutation.error
-  const sandboxMissing = !connectWorkspaceMutation.data && isMissingSandboxError(connectError)
+  const reconnecting = connectWorkspacePending
+  const creatingSandbox = reconnecting && (connectWorkspaceVariables?.recreate || !currentWorkspace?.sandbox_id)
+  const connectError = reconnecting ? null : connectWorkspaceError
+  const sandboxMissing = !connectWorkspaceData && isMissingSandboxError(connectError)
   const connectFailed = Boolean(connectError && !sandboxMissing)
   const canOpenIDE = Boolean(currentWorkspace?.ide_url && !sandboxMissing && !connectFailed && !reconnecting)
   const missingSandboxLabel = currentWorkspace?.sandbox_id || '-'
@@ -1141,7 +1127,7 @@ function WorkspaceDetail() {
   return (
     <div className="relative flex h-screen flex-col overflow-hidden bg-background">
       {creatingSandbox ? <SandboxCreationOverlay repository={currentWorkspace?.repo_full_name} /> : null}
-      <Dialog
+      <Dialog.Root
         open={missingSandboxOpen}
         onOpenChange={(open) => {
           if (!open) {
@@ -1149,55 +1135,54 @@ function WorkspaceDetail() {
           }
         }}
       >
-        <DialogContent className="max-w-md rounded-md" showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-amber-600" />
-              Sandbox unavailable
-            </DialogTitle>
-            <DialogDescription>
-              The sandbox for this workspace no longer exists. You can create a new sandbox with the same workspace
-              configuration and continue from a fresh runtime.
-            </DialogDescription>
-          </DialogHeader>
+        <Dialog.Content size="2" maxWidth="450px">
+          <Dialog.Title className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5 text-amber-600" />
+            Sandbox unavailable
+          </Dialog.Title>
+          <Dialog.Description size="2" mb="4" color="gray">
+            The sandbox for this workspace no longer exists. You can create a new sandbox with the same workspace
+            configuration and continue from a fresh runtime.
+          </Dialog.Description>
           <div className="rounded-md border bg-secondary/30 px-4 py-3 text-sm">
             <span className="text-muted-foreground">Missing sandbox</span>
             <p className="mt-1 truncate font-mono text-xs">{missingSandboxLabel}</p>
           </div>
-          <DialogFooter>
-            <DialogClose
-              render={
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setDismissedMissingWorkspaceID(workspace.id)}
-                  disabled={connectWorkspaceMutation.isPending}
-                />
-              }
-            >
-              Not now
-            </DialogClose>
+          <Flex gap="3" mt="4" justify="end">
             <Button
               type="button"
-              onClick={() => connectWorkspaceMutation.mutate({ recreate: true })}
-              disabled={connectWorkspaceMutation.isPending}
+              variant="soft"
+              color="gray"
+              onClick={() => setDismissedMissingWorkspaceID(workspace.id)}
+              disabled={connectWorkspacePending}
             >
-              {connectWorkspaceMutation.isPending ? 'Creating...' : 'Create new sandbox'}
+              Not now
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <Button
+              type="button"
+              onClick={() => connectWorkspace({ recreate: true })}
+              disabled={connectWorkspacePending}
+            >
+              {connectWorkspacePending ? 'Creating...' : 'Create new sandbox'}
+            </Button>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
 
       <header className="z-20 shrink-0 border-b bg-background/95 backdrop-blur">
         <div className="flex flex-col gap-3 px-5 py-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 items-center gap-3">
-            <Link
-              className={cn(buttonVariants({ variant: 'outline', size: 'icon' }), 'no-underline')}
-              to="/workspaces"
-              aria-label="Back to workspaces"
+            <IconButton
+              asChild
+              variant="ghost"
+              color="gray"
+              size="2"
+              className="rounded-sm text-muted-foreground no-underline hover:bg-secondary hover:text-foreground"
             >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+              <Link to="/workspaces" aria-label="Back to workspaces">
+                <ArrowLeft className="h-4 w-4" />
+              </Link>
+            </IconButton>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="truncate text-lg font-semibold">{title}</h1>
@@ -1206,83 +1191,88 @@ function WorkspaceDetail() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {repoURL ? (
-              <a
-                className={cn(buttonVariants({ variant: 'outline' }), 'no-underline')}
-                href={repoURL}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <GitBranch className="h-4 w-4" />
-                Repository
-              </a>
+              <Button asChild variant="outline" color="gray" className="no-underline">
+                <a
+                  href={repoURL}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <GitBranch className="h-4 w-4" />
+                  Repository
+                </a>
+              </Button>
             ) : null}
             {canOpenIDE ? (
-              <a
-                className={cn(buttonVariants({ variant: 'default' }), 'no-underline')}
-                href={currentWorkspace.ide_url}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <ExternalLink className="h-4 w-4" />
-                Open IDE
-              </a>
+              <Button asChild className="no-underline">
+                <a
+                  href={currentWorkspace.ide_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  Open IDE
+                </a>
+              </Button>
             ) : (
               <Button type="button" disabled>
                 <ExternalLink className="h-4 w-4" />
                 Open IDE
               </Button>
             )}
-            <Sheet>
-              <SheetTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    aria-label="Workspace settings"
-                  />
-                }
-              >
-                <Settings className="h-4 w-4" />
-              </SheetTrigger>
-              <SheetContent>
-                <SheetHeader>
-                  <SheetTitle>Workspace metadata</SheetTitle>
-                  <SheetDescription>Runtime details and launch readiness for {title}.</SheetDescription>
-                </SheetHeader>
-                <div className="flex-1 overflow-auto p-5">
-                  <div className="mb-4 rounded-md border">
+            <Dialog.Root open={workspaceInfoOpen} onOpenChange={setWorkspaceInfoOpen}>
+              <Dialog.Trigger>
+                <IconButton
+                  type="button"
+                  variant="ghost"
+                  color="gray"
+                  size="2"
+                  className="rounded-sm text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  aria-label="Workspace settings"
+                >
+                  <Settings className="h-4 w-4" />
+                </IconButton>
+              </Dialog.Trigger>
+              <Dialog.Content size="2" maxWidth="560px">
+                <Dialog.Title>Workspace metadata</Dialog.Title>
+                <Dialog.Description size="2" mb="4" color="gray">
+                  Runtime details and launch readiness for {title}.
+                </Dialog.Description>
+                <Inset side="x" my="3">
+                  <div className="border-y">
                     <DetailRow label="Region" value={currentWorkspace.region} />
                     <DetailRow label="Template" value={currentWorkspace.template_id} />
                     <DetailRow label="Sandbox" value={currentWorkspace.sandbox_id} />
                     <DetailRow label="Endpoint" value={currentWorkspace.endpoint} />
                   </div>
-                  <pre className="overflow-auto rounded-md border bg-secondary/30 p-4 text-xs leading-6 text-foreground">
-                    <code>{metadataJSON}</code>
-                  </pre>
-                  <div className="mt-4 rounded-md border">
-                    <div className="flex items-center gap-2 border-b px-4 py-3">
-                      <Rocket className="h-4 w-4 text-muted-foreground" />
-                      <h3 className="text-sm font-semibold">Launch checklist</h3>
+                </Inset>
+                <pre className="max-h-60 overflow-auto rounded-md border bg-secondary/30 p-4 text-xs leading-6 text-foreground"><code>{metadataJSON}</code></pre>
+                <Card size="2" mt="4">
+                  <div className="flex items-center gap-2">
+                    <Rocket className="h-4 w-4 text-muted-foreground" />
+                    <h3 className="text-sm font-semibold">Launch checklist</h3>
+                  </div>
+                  <div className="mt-3 divide-y text-sm">
+                    <div className="flex items-center justify-between py-2">
+                      <span className="text-muted-foreground">IDE proxy</span>
+                      <Badge color={currentWorkspace.ide_url ? 'green' : 'gray'} variant="soft">
+                        {currentWorkspace.ide_url ? 'available' : 'missing'}
+                      </Badge>
                     </div>
-                    <div className="divide-y text-sm">
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <span className="text-muted-foreground">IDE proxy</span>
-                        <span className="font-medium">{currentWorkspace.ide_url ? 'available' : 'missing'}</span>
-                      </div>
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <span className="text-muted-foreground">Repository</span>
-                        <span className="font-medium">{currentWorkspace.repo_full_name || 'scratch workspace'}</span>
-                      </div>
-                      <div className="flex items-center justify-between px-4 py-3">
-                        <span className="text-muted-foreground">Region</span>
-                        <span className="font-medium">{currentWorkspace.region}</span>
-                      </div>
+                    <div className="flex items-center justify-between py-2">
+                      <span className="text-muted-foreground">Repository</span>
+                      <span className="font-medium">{currentWorkspace.repo_full_name || 'scratch workspace'}</span>
+                    </div>
+                    <div className="flex items-center justify-between py-2">
+                      <span className="text-muted-foreground">Region</span>
+                      <span className="font-medium">{currentWorkspace.region}</span>
                     </div>
                   </div>
-                </div>
-              </SheetContent>
-            </Sheet>
+                </Card>
+                <Flex gap="3" mt="4" justify="end">
+                  <Button variant="soft" color="gray" onClick={() => setWorkspaceInfoOpen(false)}>Close</Button>
+                </Flex>
+              </Dialog.Content>
+            </Dialog.Root>
           </div>
         </div>
       </header>
@@ -1320,7 +1310,7 @@ function WorkspaceDetail() {
                   key={message.id}
                   className={cn(
                     'flex',
-                    message.role === 'user' ? 'justify-end' : 'justify-start',
+                    message.role === 'user' ? 'justify-end' : 'w-full justify-start',
                   )}
                 >
                   <div
@@ -1329,7 +1319,7 @@ function WorkspaceDetail() {
                       'rounded-md px-3 py-2 text-sm',
                       message.role === 'user'
                         ? 'w-fit max-w-[calc(100%-2rem)] bg-secondary/50'
-                        : 'mr-6 min-w-0 flex-1 bg-transparent px-0',
+                        : 'min-w-0 flex-1 bg-transparent px-0',
                     )}
                   >
                     <div className="break-words leading-6">
@@ -1339,8 +1329,8 @@ function WorkspaceDetail() {
                 </div>
               ))}
               {chatStreamingContent ? (
-                <div className="flex justify-start">
-                  <div className="mr-6 min-w-0 flex-1 rounded-md bg-transparent px-0 py-2 text-sm">
+                <div className="flex w-full justify-start">
+                  <div className="min-w-0 flex-1 rounded-md bg-transparent px-0 py-2 text-sm">
                     <div className="break-words leading-6">
                       <ChatMarkdown content={chatStreamingContent} />
                     </div>
@@ -1364,12 +1354,9 @@ function WorkspaceDetail() {
                       <p className="mt-1 leading-6 text-amber-800">
                         Configure it before using AI Chat for this workspace.
                       </p>
-                      <Link
-                        className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'mt-3 bg-background no-underline')}
-                        to="/credentials"
-                      >
-                        Configure credentials
-                      </Link>
+                      <Button asChild variant="outline" color="gray" size="1" className="mt-3 bg-background no-underline">
+                        <Link to="/credentials">Configure credentials</Link>
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -1387,33 +1374,34 @@ function WorkspaceDetail() {
                 submitChatMessage()
               }}
             >
-              <InputGroup className="min-h-24 items-stretch rounded-2xl bg-secondary/40 shadow-sm has-[[data-slot=input-group-control]:focus-visible]:ring-2">
-                <InputGroupTextarea
+              <div className="flex min-h-24 flex-col items-stretch rounded-2xl border bg-secondary/40 shadow-sm">
+                <TextArea
                   aria-label="Message AI Chat"
                   placeholder="Ask AI Chat to inspect, run, or explain..."
-                  className="min-h-14 px-3 text-sm"
+                  style={{ resize: 'none' }}
+                  className="chat-message-field min-h-14 flex-1 bg-transparent text-sm"
                   value={chatMessage}
                   onChange={(event) => setChatMessage(event.target.value)}
                   onKeyDown={handleChatMessageKeyDown}
                   disabled={chatDisabled}
                 />
-                <InputGroupAddon align="block-end" className="justify-between">
-                  <InputGroupText className="text-xs">
+                <div className="flex items-center justify-between gap-2 px-4 pb-3 text-muted-foreground">
+                  <span className="text-xs">
                     {currentWorkspace?.sandbox_id ? 'Workspace context attached' : 'Connect a sandbox first'}
-                  </InputGroupText>
+                  </span>
                   <div className="flex items-center gap-1">
-                    <InputGroupButton
+                    <IconButton
                       type="submit"
-                      size="icon-xs"
+                      size="1"
                       aria-label="Send message"
                       disabled={chatDisabled || !chatMessage.trim()}
-                      className="rounded-full bg-primary text-primary-foreground hover:bg-primary/80"
+                      className="chat-send-button rounded-full bg-primary text-primary-foreground hover:bg-primary/80"
                     >
                       {chatPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
-                    </InputGroupButton>
+                    </IconButton>
                   </div>
-                </InputGroupAddon>
-              </InputGroup>
+                </div>
+              </div>
             </form>
           </div>
         </section>
@@ -1432,49 +1420,71 @@ function WorkspaceDetail() {
           <div className="mx-auto h-full w-px bg-border transition-[width,background-color] group-hover:w-1 group-hover:bg-primary/60 group-focus-visible:w-1 group-focus-visible:bg-primary/60" />
         </div>
 
-        <section className="flex min-h-0 flex-col">
-          <Tabs value={workbenchTab} onValueChange={handleWorkbenchTabChange} className="min-h-0 flex-1">
-            <div className="flex h-10 shrink-0 items-center border-b bg-background">
-              <TabsList className="border-b-0">
-                <TabsTrigger value="files">
+        <section className="flex min-h-0 flex-col bg-background">
+          <Tabs.Root value={workbenchTab} onValueChange={handleWorkbenchTabChange} className="flex min-h-0 flex-1 flex-col">
+            <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b bg-secondary/20 px-2">
+              <Tabs.List className="workbench-tabs-list min-w-0 flex-1 bg-transparent">
+                <Tabs.Trigger value="files" className="h-full" aria-label="Files">
                   <FolderTree className="h-4 w-4" />
                   Files
-                </TabsTrigger>
-                <TabsTrigger value="monitor">
+                </Tabs.Trigger>
+                <Tabs.Trigger value="monitor" className="h-full" aria-label="Monitor">
                   <Activity className="h-4 w-4" />
                   Monitor
-                </TabsTrigger>
+                </Tabs.Trigger>
                 {terminalSessions.map((session) => (
-                  <div key={session.id} role="presentation" className="inline-flex h-9 shrink-0 items-center">
-                    <TabsTrigger value={session.id} className="pr-1">
-                      <SquareTerminal className="h-4 w-4" />
-                      {session.label}
-                    </TabsTrigger>
-                    <Button
+                  <div key={session.id} className="workbench-terminal-tab-shell group relative inline-flex h-full shrink-0 items-center">
+                    <Tabs.Trigger
+                      value={session.id}
+                      aria-label={session.label}
+                      className="workbench-terminal-tab inline-flex h-full cursor-default select-none items-center pr-8 pl-3 text-sm text-muted-foreground outline-none transition-colors focus-visible:text-foreground"
+                    >
+                      <span className="workbench-terminal-tab-inner inline-flex items-center">
+                        <SquareTerminal className="h-4 w-4" />
+                        {session.label}
+                      </span>
+                    </Tabs.Trigger>
+                    <IconButton
                       type="button"
                       variant="ghost"
-                      size="icon-xs"
-                      className="-ml-1 h-7 w-7 text-muted-foreground hover:text-foreground"
+                      color="gray"
+                      size="1"
+                      className="workbench-terminal-tab-close absolute right-1 text-muted-foreground hover:text-foreground"
                       aria-label={`Close ${session.label}`}
-                      onClick={() => closeTerminal(session.id)}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        closeTerminal(session.id)
+                      }}
+                      onMouseDown={(event) => {
+                        event.stopPropagation()
+                      }}
+                      onPointerDown={(event) => {
+                        event.stopPropagation()
+                      }}
+                      onKeyDown={(event) => {
+                        event.stopPropagation()
+                      }}
                     >
                       <X className="h-3 w-3" />
-                    </Button>
+                    </IconButton>
                   </div>
                 ))}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="ml-1"
-                  onClick={openNewTerminal}
-                  aria-label="Open new terminal"
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </TabsList>
+              </Tabs.List>
+              <IconButton
+                type="button"
+                variant="ghost"
+                color="gray"
+                size="1"
+                className="shrink-0 rounded-sm text-muted-foreground hover:bg-secondary hover:text-foreground"
+                onClick={openNewTerminal}
+                aria-label="Open new terminal"
+                title="Open new terminal"
+              >
+                <Plus className="h-4 w-4" />
+              </IconButton>
             </div>
-            <TabsContent value="files" keepMounted className="flex min-h-0 min-w-0">
+            <Tabs.Content value="files" forceMount className="hidden min-h-0 min-w-0 flex-1 data-[state=active]:flex">
               {sandboxMissing ? (
                 <div className="flex h-full w-full items-center justify-center bg-background p-6 text-sm text-muted-foreground">
                   <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
@@ -1491,10 +1501,10 @@ function WorkspaceDetail() {
                     </div>
                     <Button
                       type="button"
-                      onClick={() => connectWorkspaceMutation.mutate({ recreate: true })}
-                      disabled={connectWorkspaceMutation.isPending}
+                      onClick={() => connectWorkspace({ recreate: true })}
+                      disabled={connectWorkspacePending}
                     >
-                      {connectWorkspaceMutation.isPending ? 'Creating...' : 'Create new sandbox'}
+                      {connectWorkspacePending ? 'Creating...' : 'Create new sandbox'}
                     </Button>
                   </div>
                 </div>
@@ -1510,10 +1520,10 @@ function WorkspaceDetail() {
                     </div>
                     <Button
                       type="button"
-                      onClick={() => connectWorkspaceMutation.mutate({})}
-                      disabled={connectWorkspaceMutation.isPending}
+                      onClick={() => connectWorkspace({})}
+                      disabled={connectWorkspacePending}
                     >
-                      {connectWorkspaceMutation.isPending ? 'Retrying...' : 'Retry'}
+                      {connectWorkspacePending ? 'Retrying...' : 'Retry'}
                     </Button>
                   </div>
                 </div>
@@ -1526,8 +1536,8 @@ function WorkspaceDetail() {
                   emptyMessage={reconnecting ? 'Checking sandbox...' : 'Preparing workspace files...'}
                 />
               )}
-            </TabsContent>
-            <TabsContent value="monitor" className="flex min-h-0 min-w-0">
+            </Tabs.Content>
+            <Tabs.Content value="monitor" className="hidden min-h-0 min-w-0 flex-1 data-[state=active]:flex">
               {sandboxMissing ? (
                 <div className="flex h-full w-full items-center justify-center bg-background p-6 text-center text-sm text-muted-foreground">
                   Create a new sandbox to view runtime metrics.
@@ -1545,9 +1555,9 @@ function WorkspaceDetail() {
                   onRefresh={() => void metricsQuery.refetch()}
                 />
               )}
-            </TabsContent>
+            </Tabs.Content>
             {terminalSessions.map((session) => (
-              <TabsContent key={session.id} value={session.id} keepMounted className="bg-[#0b0f14]">
+              <Tabs.Content key={session.id} value={session.id} forceMount className="hidden min-h-0 min-w-0 flex-1 bg-[#0b0f14] data-[state=active]:flex">
                 {sandboxMissing ? (
                   <div className="flex h-full items-center justify-center rounded-md border border-dashed bg-background p-6 text-center text-sm text-muted-foreground">
                     Create a new sandbox to open a command line.
@@ -1559,7 +1569,7 @@ function WorkspaceDetail() {
                 ) : currentWorkspace?.sandbox_id && session.opened ? (
                   <Suspense
                     fallback={
-                      <div className="flex h-full items-center justify-center bg-[#0b0f14] p-6 text-sm text-slate-300">
+                      <div className="flex h-full w-full items-center justify-center bg-[#0b0f14] p-6 text-sm text-slate-300">
                         Loading terminal...
                       </div>
                     }
@@ -1576,9 +1586,9 @@ function WorkspaceDetail() {
                     Waiting for sandbox...
                   </div>
                 )}
-              </TabsContent>
+              </Tabs.Content>
             ))}
-          </Tabs>
+          </Tabs.Root>
         </section>
 
       </div>

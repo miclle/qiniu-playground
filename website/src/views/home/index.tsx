@@ -1,7 +1,9 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import type { FormEvent, ReactNode } from 'react'
+import { Badge, Button, Card, Dialog, Flex, IconButton, Inset, Popover, Select, Table, TextField } from '@radix-ui/themes'
+import type { FormEvent, KeyboardEvent, ReactNode } from 'react'
 import { lazy, Suspense, useState } from 'react'
 import {
+  Check,
   ChevronDown,
   GitBranch,
   LoaderCircle,
@@ -13,39 +15,12 @@ import {
   TerminalSquare,
 } from 'lucide-react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
-import { Button, buttonVariants } from 'src/components/ui/button'
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from 'src/components/ui/command'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from 'src/components/ui/dialog'
-import { Input } from 'src/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from 'src/components/ui/popover'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from 'src/components/ui/select'
 import { currentUser } from 'src/api/auth'
 import { githubAppInstall, githubInstallations, githubRepositories, openRepository } from 'src/api/github'
 import { deleteQiniuCredential, qiniuCredentialStatus, saveQiniuCredential } from 'src/api/qiniu'
 import { connectSandbox, createSandbox, sandboxSessions } from 'src/api/sandboxes'
 import { sandboxTemplates } from 'src/api/templates'
 import { createWorkspace, workspaces as fetchWorkspaces } from 'src/api/workspaces'
-import { cn } from 'src/lib/utils'
 import { queryClient } from 'src/lib/query-client'
 
 const TerminalPanel = lazy(() => import('src/components/TerminalPanel'))
@@ -115,6 +90,42 @@ function workspaceNameFromRepository(fullName: string) {
   return fullName.trim().replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^[-_]+|[-_]+$/g, '') || 'workspace'
 }
 
+function RepositoryPickerOption({
+  selected,
+  children,
+  onSelect,
+}: {
+  selected: boolean
+  children: ReactNode
+  onSelect: () => void
+}) {
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return
+    }
+    event.preventDefault()
+    onSelect()
+  }
+
+  return (
+    <div
+      role="option"
+      aria-selected={selected}
+      tabIndex={0}
+      className={[
+        'flex min-h-8 w-full cursor-pointer items-center gap-2 rounded-sm px-2.5 py-1.5 text-sm text-foreground outline-none',
+        'hover:bg-[var(--gray-3)] focus-visible:bg-[var(--gray-3)] focus-visible:ring-2 focus-visible:ring-ring/40',
+        selected ? 'bg-accent text-accent-foreground' : '',
+      ].join(' ')}
+      onClick={onSelect}
+      onKeyDown={handleKeyDown}
+    >
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {selected ? <Check className="h-4 w-4 shrink-0 text-primary" /> : null}
+    </div>
+  )
+}
+
 function SandboxCreationOverlay({ repository }: { repository?: string }) {
   return (
     <div
@@ -176,6 +187,7 @@ function Home({ page }: HomeProps) {
   })
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [repoPickerOpen, setRepoPickerOpen] = useState(false)
+  const [repoSearch, setRepoSearch] = useState('')
   const [selectedRepoID, setSelectedRepoID] = useState('')
   const [workspaceName, setWorkspaceName] = useState('')
   const [workspaceConfig, setWorkspaceConfig] = useState({
@@ -292,8 +304,11 @@ function Home({ page }: HomeProps) {
   const installations = installationsQuery.data?.data.installations ?? []
   const repos = reposQuery.data?.data.repositories ?? []
   const selectedRepo = repos.find((repo) => repo.id === selectedRepoID)
+  const normalizedRepoSearch = repoSearch.trim().toLowerCase()
+  const filteredRepos = normalizedRepoSearch
+    ? repos.filter((repo) => (repo.full_name || '').toLowerCase().includes(normalizedRepoSearch))
+    : repos
   const creatingWorkspace = openRepositoryMutation.isPending || createWorkspaceMutation.isPending
-  const selectedRegion = workspaceRegions.find((region) => region.endpoint === workspaceConfig.region) ?? workspaceRegions[0]
   const workspaceRows = workspacesQuery.data?.data.workspaces ?? []
   const hasGitHubInstallation = installations.length > 0 || repos.length > 0
   const qiniuStatus = qiniuQuery.data?.data
@@ -359,14 +374,14 @@ function Home({ page }: HomeProps) {
     })
   }
 
-	function handleRepositoryWorkspaceClick(repo: (typeof repos)[number]) {
-		const workspace = workspaceRows.find((item) => item.github_repo_id === repo.github_repo_id)
-		if (workspace) {
-			navigate(`/workspaces/${workspace.id}`)
-			return
-		}
+  function handleRepositoryWorkspaceClick(repo: (typeof repos)[number]) {
+    const workspace = workspaceRows.find((item) => item.github_repo_id === repo.github_repo_id)
+    if (workspace) {
+      navigate(`/workspaces/${workspace.id}`)
+      return
+    }
     setSelectedRepoID(repo.id)
-    setWorkspaceName(workspaceNameFromRepository(repo.full_name))
+    setWorkspaceName(workspaceNameFromRepository(repo.full_name || ''))
     setRepoPickerOpen(false)
     setWorkspaceDialogOpen(true)
   }
@@ -385,7 +400,7 @@ function Home({ page }: HomeProps) {
   const workspaceError = workspacesQuery.isError ? apiErrorMessage(workspacesQuery.error) : ''
 
   const workspaceDialog = (
-    <Dialog
+    <Dialog.Root
       open={workspaceDialogOpen}
       onOpenChange={(open) => {
         setWorkspaceDialogOpen(open)
@@ -394,15 +409,16 @@ function Home({ page }: HomeProps) {
         }
       }}
     >
-      <DialogContent className="relative max-w-4xl gap-0 overflow-hidden rounded-md p-0 sm:max-w-4xl" showCloseButton={false}>
+      <Dialog.Content size="2" maxWidth="520px" className="relative">
         {creatingWorkspace ? <SandboxCreationOverlay repository={selectedRepo?.full_name} /> : null}
         <form onSubmit={handleWorkspaceSubmit}>
-          <DialogHeader className="border-b px-5 py-4">
-            <DialogTitle>Create workspace</DialogTitle>
-          </DialogHeader>
-          <div>
+          <Dialog.Title>Create workspace</Dialog.Title>
+          <Dialog.Description size="2" mb="3" color="gray">
+            Launch a sandbox from a repository, region, and template.
+          </Dialog.Description>
+          <Flex direction="column" gap="2" mb="3">
             {!qiniuQuery.isLoading && !qiniuStatus?.configured ? (
-              <div className="flex flex-col gap-2 border-b bg-secondary/40 px-5 py-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-2 rounded-md bg-secondary/50 px-3 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <span className="text-muted-foreground">Configure a Sandbox API Key before creating this workspace.</span>
                 <Link className="font-medium text-foreground no-underline hover:underline" to="/credentials">
                   Configure API key
@@ -410,7 +426,7 @@ function Home({ page }: HomeProps) {
               </div>
             ) : null}
             {!installationsQuery.isLoading && !hasGitHubInstallation ? (
-              <div className="flex flex-col gap-2 border-b bg-secondary/40 px-5 py-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-2 rounded-md bg-secondary/50 px-3 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <span className="text-muted-foreground">Configure GitHub App to choose repositories for new workspaces.</span>
                 {installURL ? (
                   <a className="font-medium text-foreground no-underline hover:underline" href={installURL}>
@@ -419,84 +435,102 @@ function Home({ page }: HomeProps) {
                 ) : null}
               </div>
             ) : null}
-            <div className="flex flex-col gap-3 px-5 py-5 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <span className="text-sm font-semibold">Name</span>
-                <p className="mt-1 text-sm text-muted-foreground">Use letters, numbers, underscores, or hyphens.</p>
+          </Flex>
+          <Inset side="x" my="3">
+            <div className="divide-y border-y">
+              <div className="grid gap-3 px-4 py-2.5 sm:grid-cols-[10rem_1fr] sm:items-start">
+                <label htmlFor="workspace-name">
+                  <span className="text-sm font-semibold">Name</span>
+                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground">Use letters, numbers, underscores, or hyphens.</p>
+                </label>
+                <TextField.Root
+                  id="workspace-name"
+                  className="rounded-md"
+                  placeholder="workspace_name"
+                  inputMode="text"
+                  pattern="[A-Za-z0-9_-]*"
+                  value={workspaceName}
+                  onChange={(event) => setWorkspaceName(sanitizeWorkspaceName(event.target.value))}
+                />
               </div>
-              <Input
-                className="rounded-md sm:w-80"
-                placeholder="workspace_name"
-                inputMode="text"
-                pattern="[A-Za-z0-9_-]*"
-                value={workspaceName}
-                onChange={(event) => setWorkspaceName(sanitizeWorkspaceName(event.target.value))}
-              />
-            </div>
-            <div className="flex flex-col gap-3 border-t px-5 py-5 sm:flex-row sm:items-start sm:justify-between">
+            <div className="grid gap-3 px-4 py-2.5 sm:grid-cols-[10rem_1fr] sm:items-start">
               <div>
                 <span className="text-sm font-semibold">Code repository</span>
-                <p className="mt-1 text-sm text-muted-foreground">Optional repository to clone into this workspace.</p>
+                <p className="mt-0.5 text-xs leading-5 text-muted-foreground">Optional repository to clone into this workspace.</p>
               </div>
-              <Popover open={repoPickerOpen} onOpenChange={(open) => setRepoPickerOpen(open)}>
-                <PopoverTrigger
-                  render={
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="lg"
-                      className="w-full justify-between rounded-md px-3 text-left sm:w-80"
-                    />
+              <Popover.Root
+                open={repoPickerOpen}
+                onOpenChange={(open) => {
+                  setRepoPickerOpen(open)
+                  if (!open) {
+                    setRepoSearch('')
                   }
-                >
-                  <span className="truncate">{selectedRepo?.full_name || 'No repository'}</span>
-                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-[min(24rem,calc(100vw-2rem))] gap-0 rounded-md p-0" sideOffset={2}>
-                  <div className="border-b px-3 py-2.5">
+                }}
+              >
+                <Popover.Trigger>
+                  <Button
+                    type="button"
+                    variant="surface"
+                    size="2"
+                    color="gray"
+                    className="repo-picker-trigger w-full justify-between"
+                  >
+                    <span className="truncate">{selectedRepo?.full_name || 'No repository'}</span>
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  </Button>
+                </Popover.Trigger>
+                <Popover.Content align="end" className="w-[min(22rem,calc(100vw-2rem))] p-0" sideOffset={4}>
+                  <div className="px-3 py-2.5">
                     <h3 className="text-sm font-medium">Select repository</h3>
                   </div>
-                  <Command>
-                    <CommandInput placeholder="Search repositories" />
-                    <CommandList>
-                      <CommandEmpty>No repositories found.</CommandEmpty>
-                      <CommandGroup>
-                        <CommandItem
-                          data-checked={selectedRepoID === ''}
-                          value="No repository"
+                  <div className="border-t border-b p-2">
+                    <TextField.Root
+                      aria-label="Search repositories"
+                      placeholder="Search repositories"
+                      size="2"
+                      value={repoSearch}
+                      onChange={(event) => setRepoSearch(event.target.value)}
+                    />
+                  </div>
+                  <div className="max-h-72 overflow-y-auto p-1" role="listbox" aria-label="Repositories">
+                    <RepositoryPickerOption
+                      selected={selectedRepoID === ''}
+                      onSelect={() => {
+                        setSelectedRepoID('')
+                        setRepoPickerOpen(false)
+                        setRepoSearch('')
+                      }}
+                    >
+                      No repository
+                    </RepositoryPickerOption>
+                    {filteredRepos.length ? (
+                      filteredRepos.map((repo) => (
+                        <RepositoryPickerOption
+                          key={repo.id}
+                          selected={selectedRepoID === repo.id}
                           onSelect={() => {
-                            setSelectedRepoID('')
+                            setSelectedRepoID(repo.id)
+                            setWorkspaceName((current) => current.trim() || workspaceNameFromRepository(repo.full_name || ''))
                             setRepoPickerOpen(false)
+                            setRepoSearch('')
                           }}
                         >
-                          No repository
-                        </CommandItem>
-                        {repos.map((repo) => (
-                          <CommandItem
-                            key={repo.id}
-                            data-checked={selectedRepoID === repo.id}
-                            value={repo.full_name}
-                            onSelect={() => {
-                              setSelectedRepoID(repo.id)
-                              setWorkspaceName((current) => current.trim() || workspaceNameFromRepository(repo.full_name))
-                              setRepoPickerOpen(false)
-                            }}
-                          >
-                            <span className="truncate">{repo.full_name}</span>
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
+                          {repo.full_name}
+                        </RepositoryPickerOption>
+                      ))
+                    ) : (
+                      <div className="py-6 text-center text-sm text-muted-foreground" role="status">No repositories found.</div>
+                    )}
+                  </div>
+                </Popover.Content>
+              </Popover.Root>
             </div>
-            <div className="flex flex-col gap-3 border-t px-5 py-5 sm:flex-row sm:items-start sm:justify-between">
+            <div className="grid gap-3 px-4 py-2.5 sm:grid-cols-[10rem_1fr] sm:items-start">
               <div>
                 <span className="block text-sm font-semibold">Region</span>
-                <span className="mt-1 block text-sm text-muted-foreground">Your workspace will run in the selected region.</span>
+                <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">Your workspace will run in the selected region.</span>
               </div>
-              <Select
+              <Select.Root
                 value={workspaceConfig.region}
                 onValueChange={(value) => {
                   if (typeof value === 'string') {
@@ -504,25 +538,23 @@ function Home({ page }: HomeProps) {
                   }
                 }}
               >
-                <SelectTrigger size="lg" className="w-full rounded-md sm:w-80">
-                  <SelectValue>{selectedRegion.label}</SelectValue>
-                </SelectTrigger>
-                <SelectContent align="end">
+                <Select.Trigger className="w-full rounded-md" />
+                <Select.Content align="end">
                   {workspaceRegions.map((region) => (
-                    <SelectItem key={region.id} value={region.endpoint}>
+                    <Select.Item key={region.id} value={region.endpoint}>
                       {region.label}
-                    </SelectItem>
+                    </Select.Item>
                   ))}
-                </SelectContent>
-              </Select>
+                </Select.Content>
+              </Select.Root>
             </div>
-            <div className="flex flex-col gap-3 border-t px-5 py-5 sm:flex-row sm:items-start sm:justify-between">
+            <div className="grid gap-3 px-4 py-2.5 sm:grid-cols-[10rem_1fr] sm:items-start">
               <div>
                 <h3 className="text-sm font-semibold">Sandbox template</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Template determines CPU, memory, image, and tools.</p>
+                <p className="mt-0.5 text-xs leading-5 text-muted-foreground">Template determines CPU, memory, image, and tools.</p>
               </div>
-              <div className="flex w-full flex-col gap-2 sm:w-80">
-                <Select
+              <div className="flex w-full flex-col gap-2">
+                <Select.Root
                   value={selectedTemplateID}
                   onValueChange={(value) => {
                     if (typeof value === 'string') {
@@ -530,17 +562,15 @@ function Home({ page }: HomeProps) {
                     }
                   }}
                 >
-                  <SelectTrigger size="lg" className="w-full rounded-md">
-                    <SelectValue>{selectedTemplate?.aliases?.[0] || selectedTemplate?.template_id || 'Select template'}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent align="end">
+                  <Select.Trigger className="w-full rounded-md" placeholder="Select template" />
+                  <Select.Content align="end">
                     {templates.map((template) => (
-                      <SelectItem key={template.template_id} value={template.template_id}>
+                      <Select.Item key={template.template_id} value={template.template_id}>
                         {template.aliases?.[0] || template.template_id}
-                      </SelectItem>
+                      </Select.Item>
                     ))}
-                  </SelectContent>
-                </Select>
+                  </Select.Content>
+                </Select.Root>
                 {templatesQuery.isLoading ? (
                   <span className="text-xs text-muted-foreground">Loading templates...</span>
                 ) : templatesQuery.isError ? (
@@ -552,31 +582,32 @@ function Home({ page }: HomeProps) {
                 )}
               </div>
             </div>
-          </div>
-          <DialogFooter className="mx-0 mb-0 rounded-b-md px-5 py-4">
+            </div>
+          </Inset>
+          <Flex gap="3" mt="4" justify="end">
             <Button
               type="button"
-              variant="outline"
-              size="lg"
+              variant="soft"
+              color="gray"
               disabled={openRepositoryMutation.isPending || createWorkspaceMutation.isPending}
               onClick={() => {
-                setWorkspaceDialogOpen(false)
                 setRepoPickerOpen(false)
+                setWorkspaceDialogOpen(false)
               }}
             >
               Cancel
             </Button>
             <Button
               type="submit"
-              size="lg"
+              size="2"
               disabled={openRepositoryMutation.isPending || createWorkspaceMutation.isPending || !qiniuStatus?.configured || !selectedTemplateID}
             >
               Create
             </Button>
-          </DialogFooter>
+          </Flex>
         </form>
-      </DialogContent>
-    </Dialog>
+      </Dialog.Content>
+    </Dialog.Root>
   )
 
   const workspacesPanel = (
@@ -589,12 +620,9 @@ function Home({ page }: HomeProps) {
               Configure a Qiniu Sandbox API Key before creating repository workspaces.
             </p>
           </div>
-          <Link
-            className={cn(buttonVariants({ size: 'lg' }), 'w-fit no-underline')}
-            to="/credentials"
-          >
-            Configure API key
-          </Link>
+          <Button asChild size="2" className="w-fit no-underline">
+            <Link to="/credentials">Configure API key</Link>
+          </Button>
         </section>
       ) : null}
       <section className="rounded-md border">
@@ -648,47 +676,67 @@ function Home({ page }: HomeProps) {
   )
 
   const codebasePanel = (
-    <section className="rounded-md border">
-      <div className="flex items-center justify-between border-b px-5 py-3">
-        <h2 className="text-sm font-semibold">GitHub repositories</h2>
+    <section className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold">GitHub repositories</h2>
+          <p className="mt-1 text-xs text-muted-foreground">Repositories available for workspace creation.</p>
+        </div>
         <span className="text-xs text-muted-foreground">{repos.length} repositories</span>
       </div>
       {repositoryError ? (
-        <div className="border-b bg-destructive/10 px-5 py-3 text-sm text-destructive">{repositoryError}</div>
+        <div className="rounded-md border bg-destructive/10 px-5 py-3 text-sm text-destructive">{repositoryError}</div>
       ) : null}
       {repos.length > 0 ? (
-        <div className="divide-y">
-          {repos.map((repo) => {
-            const workspace = workspaceRows.find((item) => item.github_repo_id === repo.github_repo_id)
-            const RepoActionIcon = workspace ? PanelsTopLeft : Plus
-            return (
-              <div key={repo.id} className="flex flex-col gap-3 px-5 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{repo.full_name}</span>
-                    {repo.private ? (
-                      <span className="rounded-md border px-2 py-0.5 text-xs text-muted-foreground">Private</span>
-                    ) : null}
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{repo.default_branch || 'No default branch'}</p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  className="text-muted-foreground hover:text-foreground"
-                  aria-label={workspace ? `Open workspace for ${repo.full_name}` : `Create workspace for ${repo.full_name}`}
-                  title={workspace ? 'Open workspace' : 'Create workspace'}
-                  onClick={() => handleRepositoryWorkspaceClick(repo)}
-                >
-                  <RepoActionIcon className="h-4 w-4" />
-                </Button>
-              </div>
-            )
-          })}
+        <div className="overflow-x-auto">
+          <Table.Root variant="surface" size="2" className="min-w-[760px]">
+            <Table.Header>
+              <Table.Row>
+                <Table.ColumnHeaderCell>Repository</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Default branch</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Visibility</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell justify="end" aria-label="Actions" />
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {repos.map((repo) => {
+                const workspace = workspaceRows.find((item) => item.github_repo_id === repo.github_repo_id)
+                const RepoActionIcon = workspace ? PanelsTopLeft : Plus
+                return (
+                  <Table.Row key={repo.id} className="align-middle">
+                    <Table.RowHeaderCell className="max-w-[360px]">
+                      <span className="block truncate font-medium">{repo.full_name}</span>
+                    </Table.RowHeaderCell>
+                    <Table.Cell className="whitespace-nowrap text-muted-foreground">
+                      {repo.default_branch || 'No default branch'}
+                    </Table.Cell>
+                    <Table.Cell>
+                      <Badge color={repo.private ? 'gray' : 'green'} variant={repo.private ? 'surface' : 'soft'}>
+                        {repo.private ? 'Private' : 'Public'}
+                      </Badge>
+                    </Table.Cell>
+                    <Table.Cell justify="end">
+                      <IconButton
+                        type="button"
+                        variant="outline"
+                        color="gray"
+                        size="2"
+                        className="text-muted-foreground hover:text-foreground"
+                        aria-label={workspace ? `Open workspace for ${repo.full_name || ''}` : `Create workspace for ${repo.full_name || ''}`}
+                        title={workspace ? 'Open workspace' : 'Create workspace'}
+                        onClick={() => handleRepositoryWorkspaceClick(repo)}
+                      >
+                        <RepoActionIcon className="h-4 w-4" />
+                      </IconButton>
+                    </Table.Cell>
+                  </Table.Row>
+                )
+              })}
+            </Table.Body>
+          </Table.Root>
         </div>
       ) : (
-        <div className="flex flex-col gap-3 p-5 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-md border p-5 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <GitBranch className="h-4 w-4 shrink-0" />
             <span>
@@ -700,12 +748,9 @@ function Home({ page }: HomeProps) {
             </span>
           </div>
           {installURL ? (
-            <a
-              className={cn(buttonVariants({ size: 'lg' }), 'w-fit no-underline')}
-              href={installURL}
-            >
-              {hasGitHubInstallation ? 'Configure app' : 'Install app'}
-            </a>
+            <Button asChild size="2" className="w-fit no-underline">
+              <a href={installURL}>{hasGitHubInstallation ? 'Configure app' : 'Install app'}</a>
+            </Button>
           ) : null}
         </div>
       )}
@@ -714,7 +759,8 @@ function Home({ page }: HomeProps) {
 
   const apiKeyPanel = (
     <form className="space-y-4" onSubmit={handleCredentialSubmit}>
-      <section className="rounded-md border p-5">
+      <Card asChild size="2">
+        <section>
         <div className="flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold">Qiniu Sandbox API Key</h2>
@@ -731,13 +777,13 @@ function Home({ page }: HomeProps) {
               .
             </p>
           </div>
-          <span className="text-xs text-muted-foreground">
+          <Badge color={qiniuStatus?.configured ? 'green' : 'amber'} variant="soft">
             {qiniuStatus?.configured ? 'Configured' : 'Required'}
-          </span>
+          </Badge>
         </div>
         <label className="mt-4 grid gap-2">
           <span className="sr-only">Sandbox API Key</span>
-          <Input
+          <TextField.Root
             className="rounded-md"
             placeholder={credentialPlaceholder('Sandbox API key', qiniuStatus?.configured, qiniuStatus?.key_hint)}
             type="password"
@@ -746,9 +792,11 @@ function Home({ page }: HomeProps) {
           />
           <span className="text-xs text-muted-foreground">{credentialHelp(qiniuStatus?.configured)}</span>
         </label>
-      </section>
+        </section>
+      </Card>
 
-      <section className="rounded-md border p-5">
+      <Card asChild size="2">
+        <section>
         <div className="flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold">Qiniu MAAS API Key</h2>
@@ -765,13 +813,13 @@ function Home({ page }: HomeProps) {
               .
             </p>
           </div>
-          <span className="text-xs text-muted-foreground">
+          <Badge color={qiniuStatus?.maas_configured ? 'green' : 'gray'} variant="soft">
             {qiniuStatus?.maas_configured ? 'Configured' : 'Optional'}
-          </span>
+          </Badge>
         </div>
         <label className="mt-4 grid gap-2">
           <span className="sr-only">MAAS API Key</span>
-          <Input
+          <TextField.Root
             className="rounded-md"
             placeholder={credentialPlaceholder('MAAS API key', qiniuStatus?.maas_configured, qiniuStatus?.maas_key_hint)}
             type="password"
@@ -780,9 +828,11 @@ function Home({ page }: HomeProps) {
           />
           <span className="text-xs text-muted-foreground">{credentialHelp(qiniuStatus?.maas_configured)}</span>
         </label>
-      </section>
+        </section>
+      </Card>
 
-      <section className="rounded-md border p-5">
+      <Card asChild size="2">
+        <section>
         <div className="border-b pb-4">
           <h2 className="text-lg font-semibold">Qiniu Access Key / Secret Key</h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -802,11 +852,11 @@ function Home({ page }: HomeProps) {
           <label className="grid gap-2">
             <span className="flex items-center justify-between gap-3 text-sm font-medium">
               Access Key
-              <span className="text-xs font-normal text-muted-foreground">
+              <Badge color={qiniuStatus?.access_key_configured ? 'green' : 'gray'} variant="soft">
                 {qiniuStatus?.access_key_configured ? 'Configured' : 'Optional'}
-              </span>
+              </Badge>
             </span>
-            <Input
+            <TextField.Root
               className="rounded-md"
               placeholder={credentialPlaceholder('AK', qiniuStatus?.access_key_configured, qiniuStatus?.access_key_hint)}
               type="password"
@@ -818,11 +868,11 @@ function Home({ page }: HomeProps) {
           <label className="grid gap-2">
             <span className="flex items-center justify-between gap-3 text-sm font-medium">
               Secret Key
-              <span className="text-xs font-normal text-muted-foreground">
+              <Badge color={qiniuStatus?.secret_key_configured ? 'green' : 'gray'} variant="soft">
                 {qiniuStatus?.secret_key_configured ? 'Configured' : 'Optional'}
-              </span>
+              </Badge>
             </span>
-            <Input
+            <TextField.Root
               className="rounded-md"
               placeholder={credentialPlaceholder('SK', qiniuStatus?.secret_key_configured, qiniuStatus?.secret_key_hint)}
               type="password"
@@ -832,11 +882,12 @@ function Home({ page }: HomeProps) {
             <span className="text-xs text-muted-foreground">{credentialHelp(qiniuStatus?.secret_key_configured)}</span>
           </label>
         </div>
-      </section>
+        </section>
+      </Card>
       <div className="flex flex-wrap items-center gap-2">
         <Button
           type="submit"
-          size="lg"
+          size="2"
           disabled={(!qiniuStatus?.configured && !credentials.sandboxAPIKey) || saveCredential.isPending}
         >
           Save all credentials
@@ -845,7 +896,8 @@ function Home({ page }: HomeProps) {
           <Button
             type="button"
             variant="outline"
-            size="lg"
+            size="2"
+            color="gray"
             disabled={deleteCredential.isPending}
             onClick={() => setDeleteCredentialsOpen(true)}
           >
@@ -853,21 +905,18 @@ function Home({ page }: HomeProps) {
           </Button>
         ) : null}
       </div>
-      <Dialog open={deleteCredentialsOpen} onOpenChange={setDeleteCredentialsOpen}>
-        <DialogContent className="max-w-md rounded-md">
-          <DialogHeader>
-            <DialogTitle>
-              Delete stored credentials?
-            </DialogTitle>
-            <DialogDescription>
-              This will remove all saved Qiniu credentials for this account. Sandbox creation and integrations will stop
-              working until credentials are saved again.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+      <Dialog.Root open={deleteCredentialsOpen} onOpenChange={setDeleteCredentialsOpen}>
+        <Dialog.Content size="2" maxWidth="450px">
+          <Dialog.Title>Delete stored credentials?</Dialog.Title>
+          <Dialog.Description size="2" mb="4" color="gray">
+            This will remove all saved Qiniu credentials for this account. Sandbox creation and integrations will stop
+            working until credentials are saved again.
+          </Dialog.Description>
+          <Flex gap="3" mt="4" justify="end">
             <Button
               type="button"
-              variant="outline"
+              variant="soft"
+              color="gray"
               disabled={deleteCredential.isPending}
               onClick={() => setDeleteCredentialsOpen(false)}
             >
@@ -875,120 +924,116 @@ function Home({ page }: HomeProps) {
             </Button>
             <Button
               type="button"
-              variant="destructive"
+              variant="solid"
+              color="red"
               disabled={deleteCredential.isPending}
               onClick={() => deleteCredential.mutate()}
             >
               Delete credentials
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
     </form>
   )
 
   const templatesPanel = (
-    <section className="rounded-md border">
+    <section className="space-y-4">
       {qiniuQuery.isLoading ? (
-        <div className="p-5 text-sm text-muted-foreground">Checking Sandbox API Key...</div>
+        <div className="rounded-md border p-5 text-sm text-muted-foreground">Checking Sandbox API Key...</div>
       ) : !qiniuStatus?.configured ? (
-        <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-md border p-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold">Sandbox API Key required</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               Configure a Qiniu Sandbox API Key before loading sandbox templates.
             </p>
           </div>
-          <Link
-            className={cn(buttonVariants({ size: 'lg' }), 'w-fit no-underline')}
-            to="/credentials"
-          >
-            Configure credentials
-          </Link>
+          <Button asChild size="2" className="w-fit no-underline">
+            <Link to="/credentials">Configure credentials</Link>
+          </Button>
         </div>
       ) : templatesQuery.isLoading ? (
-        <div className="p-5 text-sm text-muted-foreground">Loading templates...</div>
+        <div className="rounded-md border p-5 text-sm text-muted-foreground">Loading templates...</div>
       ) : templatesQuery.isError ? (
-        <div className="p-5 text-sm text-muted-foreground">Failed to load templates. Check the Sandbox API Key and try again.</div>
+        <div className="rounded-md border p-5 text-sm text-muted-foreground">Failed to load templates. Check the Sandbox API Key and try again.</div>
       ) : (
         <>
-          <div className="flex flex-col gap-3 border-b px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-sm font-semibold">Template catalog</h2>
               <p className="mt-1 text-xs text-muted-foreground">Region-scoped templates available for new sandboxes.</p>
             </div>
-            <Select
+            <Select.Root
               value={workspaceConfig.region}
               onValueChange={(value) =>
                 setWorkspaceConfig((current) => ({ ...current, region: value ?? current.region, templateID: '' }))
               }
             >
-              <SelectTrigger className="w-full sm:w-[190px]">
-                <SelectValue>{selectedRegion.label}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
+              <Select.Trigger className="w-full sm:w-[190px]" />
+              <Select.Content>
                 {workspaceRegions.map((region) => (
-                  <SelectItem key={region.id} value={region.endpoint}>
+                  <Select.Item key={region.id} value={region.endpoint}>
                     {region.label}
-                  </SelectItem>
+                  </Select.Item>
                 ))}
-              </SelectContent>
-            </Select>
+              </Select.Content>
+            </Select.Root>
           </div>
           {templates.length > 0 ? (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] text-left text-sm">
-                <thead className="border-b bg-secondary/40 text-xs font-medium uppercase text-muted-foreground">
-                  <tr>
-                    <th className="px-5 py-3">Aliases</th>
-                    <th className="px-5 py-3">Template ID</th>
-                    <th className="px-5 py-3">Resources</th>
-                    <th className="px-5 py-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
+              <Table.Root variant="surface" size="2" className="min-w-[760px]">
+                <Table.Header>
+                  <Table.Row>
+                    <Table.ColumnHeaderCell>Aliases</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>Template ID</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>Resources</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>Status</Table.ColumnHeaderCell>
+                  </Table.Row>
+                </Table.Header>
+                <Table.Body>
                   {templates.map((template) => (
-                    <tr key={template.template_id} className="align-top">
-                      <td className="max-w-[260px] px-5 py-4">
+                    <Table.Row key={template.template_id} className="align-top">
+                      <Table.RowHeaderCell className="max-w-[260px]">
                         {template.aliases?.length ? (
                           <div className="flex flex-wrap gap-1.5">
                             {template.aliases.map((alias) => (
-                              <span key={alias} className="rounded-md bg-secondary px-2 py-1 font-medium text-foreground">
+                              <Badge key={alias} color="gray" variant="soft" highContrast>
                                 {alias}
-                              </span>
+                              </Badge>
                             ))}
                           </div>
                         ) : (
                           <span className="text-muted-foreground">No aliases</span>
                         )}
-                      </td>
-                      <td className="max-w-[260px] px-5 py-4 font-mono text-xs text-muted-foreground">
+                      </Table.RowHeaderCell>
+                      <Table.Cell className="max-w-[260px] font-mono text-xs text-muted-foreground">
                         <span className="block truncate">{template.template_id}</span>
-                      </td>
-                      <td className="whitespace-nowrap px-5 py-4 text-muted-foreground">{templateResources(template)}</td>
-                      <td className="px-5 py-4">
+                      </Table.Cell>
+                      <Table.Cell className="whitespace-nowrap text-muted-foreground">{templateResources(template)}</Table.Cell>
+                      <Table.Cell>
                         <div className="flex flex-wrap gap-1.5">
                           {template.build_status ? (
-                            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">{template.build_status}</span>
+                            <Badge color="gray" variant="surface">{template.build_status}</Badge>
                           ) : null}
                           {template.default ? (
-                            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">Default</span>
+                            <Badge color="blue" variant="soft">Default</Badge>
                           ) : null}
                           {template.public ? (
-                            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground">Public</span>
+                            <Badge color="green" variant="soft">Public</Badge>
                           ) : null}
                           {!template.build_status && !template.default && !template.public ? (
                             <span className="text-muted-foreground">-</span>
                           ) : null}
                         </div>
-                      </td>
-                    </tr>
+                      </Table.Cell>
+                    </Table.Row>
                   ))}
-                </tbody>
-              </table>
+                </Table.Body>
+              </Table.Root>
             </div>
           ) : (
-            <div className="flex items-center gap-3 p-5 text-sm text-muted-foreground">
+            <div className="flex items-center gap-3 rounded-md border p-5 text-sm text-muted-foreground">
               <Server className="h-4 w-4" />
               <span>No templates found for this Sandbox API Key.</span>
             </div>
@@ -999,8 +1044,8 @@ function Home({ page }: HomeProps) {
   )
 
   const sandboxPanel = (
-    <section className="rounded-md border">
-      <div className="flex flex-col gap-3 border-b px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+    <section className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Sandbox sessions</h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -1008,26 +1053,24 @@ function Home({ page }: HomeProps) {
           </p>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-          <Select
+          <Select.Root
             value={workspaceConfig.region}
             onValueChange={(value) =>
               setWorkspaceConfig((current) => ({ ...current, region: value ?? current.region, templateID: '' }))
             }
           >
-            <SelectTrigger className="w-full sm:w-[190px]">
-              <SelectValue>{selectedRegion.label}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
+            <Select.Trigger className="w-full sm:w-[190px]" />
+            <Select.Content>
               {workspaceRegions.map((region) => (
-                <SelectItem key={region.id} value={region.endpoint}>
+                <Select.Item key={region.id} value={region.endpoint}>
                   {region.label}
-                </SelectItem>
+                </Select.Item>
               ))}
-            </SelectContent>
-          </Select>
+            </Select.Content>
+          </Select.Root>
           <Button
             type="button"
-            size="lg"
+            size="2"
             className="w-full sm:w-auto"
             disabled={!qiniuStatus?.configured || createSandboxMutation.isPending}
             onClick={() => createSandboxMutation.mutate()}
@@ -1038,28 +1081,28 @@ function Home({ page }: HomeProps) {
       </div>
       {sandboxes.length > 0 ? (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[920px] text-left text-sm">
-            <thead className="border-b bg-secondary/40 text-xs font-medium uppercase text-muted-foreground">
-              <tr>
-                <th className="px-5 py-3">Sandbox</th>
-                <th className="px-5 py-3">Status</th>
-                <th className="px-5 py-3">Workspace</th>
-                <th className="px-5 py-3">Resources</th>
-                <th className="px-5 py-3">Metadata</th>
-                <th className="px-5 py-3 text-right" aria-label="Actions" />
-              </tr>
-            </thead>
-            <tbody className="divide-y">
+          <Table.Root variant="surface" size="2" className="min-w-[920px]">
+            <Table.Header>
+              <Table.Row>
+                <Table.ColumnHeaderCell>Sandbox</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Status</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Workspace</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Resources</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>Metadata</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell justify="end" aria-label="Actions" />
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
               {sandboxes.map((sandbox) => {
                 const workspaceID = sandboxWorkspaceID(sandbox)
                 const workspaceLabel = sandboxWorkspaceLabel(sandbox)
                 return (
-                  <tr key={sandbox.id} className="align-top">
-                    <td className="max-w-[260px] px-5 py-4">
+                  <Table.Row key={sandbox.id} className="align-top">
+                    <Table.RowHeaderCell className="max-w-[260px]">
                       <span className="block truncate font-medium">{sandbox.sandbox_id}</span>
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-4 text-muted-foreground">{sandbox.state || '-'}</td>
-                    <td className="max-w-[260px] px-5 py-4">
+                    </Table.RowHeaderCell>
+                    <Table.Cell className="whitespace-nowrap text-muted-foreground">{sandbox.state || '-'}</Table.Cell>
+                    <Table.Cell className="max-w-[260px]">
                       {workspaceID ? (
                         <Link
                           className="block truncate font-medium text-foreground underline-offset-4 hover:underline"
@@ -1073,37 +1116,40 @@ function Home({ page }: HomeProps) {
                       {sandbox.workspace_path ? (
                         <span className="mt-1 block truncate font-mono text-xs text-muted-foreground">{sandbox.workspace_path}</span>
                       ) : null}
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-4 text-muted-foreground">{sandboxResources(sandbox)}</td>
-                    <td className="max-w-[320px] px-5 py-4">
+                    </Table.Cell>
+                    <Table.Cell className="whitespace-nowrap text-muted-foreground">{sandboxResources(sandbox)}</Table.Cell>
+                    <Table.Cell className="max-w-[320px]">
                       {metadataEntries(sandbox.metadata).length > 0 ? (
                         <div className="flex flex-wrap gap-1.5">
                           {metadataEntries(sandbox.metadata).map(([key, value]) => (
-                            <span key={key} className="rounded-md border bg-secondary/30 px-2 py-1 text-xs text-muted-foreground">
+                            <Badge key={key} color="gray" variant="surface">
                               <span className="font-medium text-foreground">{key}</span>: {value}
-                            </span>
+                            </Badge>
                           ))}
                         </div>
                       ) : (
                         <span className="text-muted-foreground">-</span>
                       )}
-                    </td>
-                    <td className="px-5 py-4">
+                    </Table.Cell>
+                    <Table.Cell justify="end">
                       <div className="flex justify-end gap-2">
                         {sandbox.ide_url ? (
-                          <a
-                            className={cn(buttonVariants({ variant: 'outline' }), 'text-muted-foreground no-underline hover:text-foreground')}
-                            href={sandbox.ide_url}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            IDE
-                          </a>
+                          <Button asChild variant="outline" color="gray" size="2" className="text-muted-foreground no-underline hover:text-foreground">
+                            <a
+                              href={sandbox.ide_url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              IDE
+                            </a>
+                          </Button>
                         ) : null}
                         {sandbox.local_session ? (
                           <Button
                             type="button"
                             variant="outline"
+                            color="gray"
+                            size="2"
                             onClick={() => setTerminalSandboxID(sandbox.sandbox_id)}
                           >
                             Terminal
@@ -1112,27 +1158,29 @@ function Home({ page }: HomeProps) {
                         <Button
                           type="button"
                           variant="outline"
+                          color="gray"
+                          size="2"
                           disabled={connectSandboxMutation.isPending}
                           onClick={() => connectSandboxMutation.mutate(sandbox.sandbox_id)}
                         >
                           Connect
                         </Button>
                       </div>
-                    </td>
-                  </tr>
+                    </Table.Cell>
+                  </Table.Row>
                 )
               })}
-            </tbody>
-          </table>
+            </Table.Body>
+          </Table.Root>
         </div>
       ) : (
-        <div className="flex items-center gap-3 p-5 text-sm text-muted-foreground">
+        <div className="flex items-center gap-3 rounded-md border p-5 text-sm text-muted-foreground">
           <Server className="h-4 w-4" />
           No sandboxes yet.
         </div>
       )}
       {terminalSandboxID ? (
-        <div className="border-t p-5">
+        <div className="rounded-md border p-5">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold">Terminal {terminalSandboxID}</h3>
             <Button
@@ -1162,7 +1210,7 @@ function Home({ page }: HomeProps) {
     page === 'workspaces' ? (
       <Button
         type="button"
-        size="lg"
+        size="2"
         className="w-fit"
         disabled={qiniuQuery.isLoading || !qiniuStatus?.configured || openRepositoryMutation.isPending || createWorkspaceMutation.isPending}
         onClick={() => {
@@ -1177,18 +1225,18 @@ function Home({ page }: HomeProps) {
     ) : page === 'codebase' ? (
       <div className="flex flex-wrap items-center gap-2">
         {installURL ? (
-          <a
-            className={cn(buttonVariants({ size: 'lg' }), 'gap-2 no-underline')}
-            href={installURL}
-          >
-            {hasGitHubInstallation ? <Settings className="h-4 w-4" /> : <GitBranch className="h-4 w-4" />}
-            {hasGitHubInstallation ? 'Configure app' : 'Install app'}
-          </a>
+          <Button asChild size="2" className="gap-2 no-underline">
+            <a href={installURL}>
+              {hasGitHubInstallation ? <Settings className="h-4 w-4" /> : <GitBranch className="h-4 w-4" />}
+              {hasGitHubInstallation ? 'Configure app' : 'Install app'}
+            </a>
+          </Button>
         ) : null}
         <Button
           type="button"
           variant="outline"
-          size="lg"
+          size="2"
+          color="gray"
           disabled={reposQuery.isFetching}
           onClick={() => void queryClient.invalidateQueries({ queryKey: ['github', 'repositories'] })}
         >

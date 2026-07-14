@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { Button, IconButton, TextField } from '@radix-ui/themes'
 import type { CSSProperties, PointerEvent, ReactNode } from 'react'
 import {
   ArrowRight,
@@ -18,8 +19,6 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 
 import { sandboxFileContent, sandboxFilePreviewURL, sandboxFiles, workspaceFilePreviewURL } from 'src/api/filesystem'
 import type { SandboxFileEntry } from 'src/api/filesystem'
-import { Button, buttonVariants } from 'src/components/ui/button'
-import { Input } from 'src/components/ui/input'
 import { fileExtension } from 'src/lib/file-extension'
 import { cn } from 'src/lib/utils'
 
@@ -398,6 +397,7 @@ export function WorkspaceFileBrowser({
         <Button
           type="button"
           variant="ghost"
+          color="gray"
           className={cn(
             'flex h-8 w-full justify-start rounded-none px-1.5 font-normal',
             selected && 'bg-muted text-foreground',
@@ -460,7 +460,7 @@ export function WorkspaceFileBrowser({
     <div className="flex min-w-0 flex-col border-b lg:border-b-0">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b px-3 focus-within:border-primary focus-within:shadow-[inset_0_-1px_0_hsl(var(--primary)),0_1px_0_hsl(var(--primary)/0.12)]">
         <span className="font-mono text-xs text-muted-foreground">$</span>
-        <Input
+        <TextField.Root
           value={pathInput}
           onChange={(event) => setPathInput(event.target.value)}
           onKeyDown={(event) => {
@@ -468,33 +468,35 @@ export function WorkspaceFileBrowser({
               openPath(pathInput)
             }
           }}
-          className="h-7 min-w-0 flex-1 border-transparent bg-transparent px-2 font-mono text-xs shadow-none focus-visible:border-transparent focus-visible:ring-0"
+          className="file-path-field h-7 min-w-0 flex-1 bg-transparent px-2 font-mono text-xs"
           aria-label="Filesystem path"
         />
-        <Button
+        <IconButton
           type="button"
           variant="ghost"
-          size="icon"
-          className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+          color="gray"
+          size="1"
+          className="rounded-sm text-muted-foreground hover:text-foreground"
           aria-label="Open path"
           title="Open path"
           onClick={() => openPath(pathInput)}
           disabled={!pathInput.trim() || pathInput.trim() === path}
         >
           <ArrowRight className="h-4 w-4" />
-        </Button>
-        <Button
+        </IconButton>
+        <IconButton
           type="button"
           variant="ghost"
-          size="icon"
-          className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+          color="gray"
+          size="1"
+          className="rounded-sm text-muted-foreground hover:text-foreground"
           aria-label="Refresh files"
           title="Refresh files"
           onClick={refreshRoot}
           disabled={filesQuery.isFetching}
         >
           <RefreshCw className={cn('h-4 w-4', filesQuery.isFetching && 'animate-spin')} />
-        </Button>
+        </IconButton>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -511,6 +513,7 @@ export function WorkspaceFileBrowser({
               <Button
                 type="button"
                 variant="ghost"
+                color="gray"
                 className="flex h-8 w-full justify-start rounded-none px-1.5 font-normal"
                 title={parentPath(path)}
                 aria-label="Open parent directory"
@@ -541,50 +544,57 @@ export function WorkspaceFileBrowser({
               <File className="h-4 w-4 text-muted-foreground" />
               <span className="truncate font-mono text-xs">{selectedFile.path}</span>
             </div>
-            <Button
+            <IconButton
               type="button"
               variant="ghost"
-              size="icon"
-              className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+              color="gray"
+              size="1"
+              className="rounded-sm text-muted-foreground hover:text-foreground"
               aria-label="Copy file preview"
               title="Copy file preview"
               disabled={!filePreviewable || !fileContent}
               onClick={() => void navigator.clipboard?.writeText(fileContent)}
             >
               <Copy className="h-4 w-4" />
-            </Button>
-            <Button
+            </IconButton>
+            <IconButton
               type="button"
               variant="ghost"
-              size="icon"
-              className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+              color="gray"
+              size="1"
+              className="rounded-sm text-muted-foreground hover:text-foreground"
               aria-label="Download file"
               title="Download file"
               disabled={fileLoading}
               onClick={() => void downloadSelectedFile()}
             >
               <Download className="h-4 w-4" />
-            </Button>
+            </IconButton>
             {selectedFilePreviewURL ? (
-              <a
-                className={cn(
-                  buttonVariants({ variant: 'ghost', size: 'icon' }),
-                  'h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground',
-                )}
-                aria-label="Open HTML preview"
-                title="Open HTML preview"
-                href={selectedFilePreviewURL}
-                target="_blank"
-                rel="noreferrer"
+              <IconButton
+                asChild
+                variant="ghost"
+                color="gray"
+                size="1"
+                className="rounded-sm text-muted-foreground hover:text-foreground"
               >
-                <ExternalLink className="h-4 w-4" />
-              </a>
+                <a
+                  aria-label="Open HTML preview"
+                  title="Open HTML preview"
+                  href={selectedFilePreviewURL}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                </a>
+              </IconButton>
             ) : null}
-            <Button
+            <IconButton
               type="button"
               variant="ghost"
-              size="icon"
-              className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground"
+              color="gray"
+              size="1"
+              className="rounded-sm text-muted-foreground hover:text-foreground"
               aria-label="Close preview"
               title="Close preview"
               onClick={() => {
@@ -593,7 +603,7 @@ export function WorkspaceFileBrowser({
               }}
             >
               <X className="h-4 w-4" />
-            </Button>
+            </IconButton>
           </div>
           <div className="min-h-0 w-full flex-1 overflow-auto bg-muted/20">
             {fileLoading ? (

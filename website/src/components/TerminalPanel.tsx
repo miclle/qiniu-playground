@@ -1,10 +1,9 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
+import { IconButton } from '@radix-ui/themes'
 import { RotateCw } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import '@xterm/xterm/css/xterm.css'
-
-import { Button } from 'src/components/ui/button'
 
 interface TerminalPanelProps {
   sandboxID: string
@@ -36,6 +35,8 @@ function TerminalPanel({ sandboxID, workspacePath, disabled = false, active = tr
   const terminalRef = useRef<Terminal | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
   const activeRef = useRef(active)
+  const readyRef = useRef(false)
+  const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null)
   const inputBufferRef = useRef('')
   const inputTimerRef = useRef<number | null>(null)
   const [connectionID, setConnectionID] = useState(0)
@@ -57,7 +58,6 @@ function TerminalPanel({ sandboxID, workspacePath, disabled = false, active = tr
       return
     }
     let disposed = false
-    let ready = false
     containerRef.current.innerHTML = ''
 
     const terminal = new Terminal({
@@ -77,22 +77,92 @@ function TerminalPanel({ sandboxID, workspacePath, disabled = false, active = tr
     terminal.open(containerRef.current)
     terminalRef.current = terminal
     fitRef.current = fit
+    lastSentSizeRef.current = null
     terminal.writeln('Connecting to sandbox shell...')
+
+    const sendResizeIfChanged = (cols: number, rows: number) => {
+      const socket = socketRef.current
+      if (!readyRef.current || socket?.readyState !== WebSocket.OPEN) {
+        return
+      }
+      const lastSize = lastSentSizeRef.current
+      if (lastSize?.cols === cols && lastSize.rows === rows) {
+        return
+      }
+      lastSentSizeRef.current = { cols, rows }
+      sendResize(socket, cols, rows)
+    }
 
     const fitTerminal = () => {
       if (!activeRef.current) {
-        return
+        return null
       }
       try {
         fit.fit()
       } catch {
-        return
+        return null
       }
       const cols = terminal.cols || defaultTerminalSize.cols
       const rows = terminal.rows || defaultTerminalSize.rows
-      const socket = socketRef.current
-      if (ready && socket?.readyState === WebSocket.OPEN) {
-        sendResize(socket, cols, rows)
+      sendResizeIfChanged(cols, rows)
+      return { cols, rows }
+    }
+
+    let cancelFit: (() => void) | null = null
+
+    const fitWhenVisible = (callback?: () => void) => {
+      cancelFit?.()
+      let completed = false
+      let observer: ResizeObserver | null = null
+      let fallbackTimer: number | null = null
+      let animationFrame: number | null = null
+
+      const complete = () => {
+        if (completed || disposed) {
+          return
+        }
+        completed = true
+        observer?.disconnect()
+        if (fallbackTimer !== null) {
+          window.clearTimeout(fallbackTimer)
+          fallbackTimer = null
+        }
+        if (animationFrame !== null) {
+          window.cancelAnimationFrame(animationFrame)
+          animationFrame = null
+        }
+        callback?.()
+      }
+
+      const run = () => {
+        if (completed || disposed) {
+          return
+        }
+        const size = fitTerminal()
+        if (size && size.cols >= 40) {
+          complete()
+        }
+      }
+
+      if (typeof ResizeObserver !== 'undefined' && containerRef.current) {
+        observer = new ResizeObserver(run)
+        observer.observe(containerRef.current)
+      }
+
+      animationFrame = window.requestAnimationFrame(run)
+      fallbackTimer = window.setTimeout(complete, 300)
+
+      cancelFit = () => {
+        completed = true
+        observer?.disconnect()
+        if (fallbackTimer !== null) {
+          window.clearTimeout(fallbackTimer)
+          fallbackTimer = null
+        }
+        if (animationFrame !== null) {
+          window.cancelAnimationFrame(animationFrame)
+          animationFrame = null
+        }
       }
     }
 
@@ -119,14 +189,15 @@ function TerminalPanel({ sandboxID, workspacePath, disabled = false, active = tr
     }
 
     socket.addEventListener('open', () => {
-      ready = true
+      readyRef.current = true
       terminal.reset()
-      fitTerminal()
-      if (workspacePath) {
-        sendInput(socket, `cd ${shellQuote(workspacePath)}\r`)
-      }
       setStatus('Connected')
-      terminal.focus()
+      fitWhenVisible(() => {
+        if (workspacePath && socket.readyState === WebSocket.OPEN) {
+          sendInput(socket, `cd ${shellQuote(workspacePath)}\r`)
+        }
+        terminal.focus()
+      })
     })
     socket.addEventListener('message', (event) => {
       terminal.write(String(event.data))
@@ -142,7 +213,7 @@ function TerminalPanel({ sandboxID, workspacePath, disabled = false, active = tr
       if (disposed) {
         return
       }
-      ready = false
+      readyRef.current = false
       setStatus('Disconnected')
       terminal.writeln('\r\nDisconnected.')
     })
@@ -152,18 +223,19 @@ function TerminalPanel({ sandboxID, workspacePath, disabled = false, active = tr
       }
     })
     const disposeResize = terminal.onResize(({ cols, rows }) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        sendResize(socket, cols, rows)
-      }
+      sendResizeIfChanged(cols, rows)
     })
     const onResize = () => fitTerminal()
     const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(fitTerminal)
     resizeObserver?.observe(containerRef.current)
     window.addEventListener('resize', onResize)
-    window.requestAnimationFrame(fitTerminal)
+    fitWhenVisible()
 
     return () => {
       disposed = true
+      readyRef.current = false
+      lastSentSizeRef.current = null
+      cancelFit?.()
       resizeObserver?.disconnect()
       window.removeEventListener('resize', onResize)
       disposeInput.dispose()
@@ -185,40 +257,67 @@ function TerminalPanel({ sandboxID, workspacePath, disabled = false, active = tr
     if (!active) {
       return
     }
-    window.requestAnimationFrame(() => {
+    let attempts = 0
+    let requestID: number
+    const refit = () => {
+      attempts += 1
+      let fitSuccess = false
       try {
         fitRef.current?.fit()
+        fitSuccess = true
       } catch {
+        // xterm can throw while the tab is visible but layout dimensions are still settling.
+      }
+      const terminal = terminalRef.current
+      const socket = socketRef.current
+      if (fitSuccess && terminal && readyRef.current && socket?.readyState === WebSocket.OPEN) {
+        const cols = terminal.cols || defaultTerminalSize.cols
+        const rows = terminal.rows || defaultTerminalSize.rows
+        const lastSize = lastSentSizeRef.current
+        if (lastSize?.cols !== cols || lastSize.rows !== rows) {
+          lastSentSizeRef.current = { cols, rows }
+          sendResize(socket, cols, rows)
+        }
+      }
+      if (fitSuccess) {
+        terminal?.focus()
         return
       }
-      terminalRef.current?.focus()
-    })
+      if (attempts < 3) {
+        requestID = window.requestAnimationFrame(refit)
+        return
+      }
+      terminal?.focus()
+    }
+    requestID = window.requestAnimationFrame(refit)
+    return () => window.cancelAnimationFrame(requestID)
   }, [active])
 
   const displayStatus = disabled ? 'Waiting for sandbox' : status
   const displayError = disabled ? '' : error
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#0b0f14] text-slate-200">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-[#0b0f14] text-slate-200">
       <div className="flex min-h-10 shrink-0 items-center gap-3 border-b border-white/10 px-3 text-xs">
         <span className="rounded-sm border border-white/10 px-2 py-0.5 font-mono text-[11px] text-slate-300">
           {displayStatus}
         </span>
         {displayError ? <span className="min-w-0 truncate text-red-300">{displayError}</span> : null}
-        <Button
+        <IconButton
           type="button"
           variant="ghost"
-          size="icon"
-          className="ml-auto h-7 w-7 text-slate-300 hover:bg-white/10 hover:text-white"
+          color="gray"
+          size="1"
+          className="ml-auto text-slate-300 hover:bg-white/10 hover:text-white"
           onClick={reconnect}
           disabled={disabled}
           aria-label="Reconnect terminal"
         >
           <RotateCw className="h-4 w-4" />
-        </Button>
+        </IconButton>
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden px-2 pt-2 pb-[5px]">
-        <div ref={containerRef} className="h-full min-h-0 overflow-hidden" />
+      <div className="min-h-0 w-full flex-1 overflow-hidden px-2 pt-2 pb-[5px]">
+        <div ref={containerRef} className="h-full min-h-0 w-full overflow-hidden" />
       </div>
     </div>
   )
