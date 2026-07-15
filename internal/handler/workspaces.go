@@ -371,13 +371,20 @@ func (ctrl *Ctrl) prepareConnectedWorkspace(
 
 func isSandboxNotFoundError(err error) bool {
 	var apiErr *qiniusb.APIError
-	if !errors.As(err, &apiErr) {
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == http.StatusNotFound {
+			return true
+		}
+		return apiErr.StatusCode == http.StatusBadGateway && strings.Contains(strings.ToLower(apiErr.Message), "sandbox was not found")
+	}
+	var controlErr *sandboxMetricsAPIError
+	if !errors.As(err, &controlErr) {
 		return false
 	}
-	if apiErr.StatusCode == http.StatusNotFound {
+	if controlErr.StatusCode == http.StatusNotFound {
 		return true
 	}
-	return apiErr.StatusCode == http.StatusBadGateway && strings.Contains(strings.ToLower(apiErr.Message), "sandbox was not found")
+	return controlErr.StatusCode == http.StatusBadGateway && strings.Contains(strings.ToLower(string(controlErr.Body)), "sandbox was not found")
 }
 
 func (ctrl *Ctrl) backfillWorkspacesFromSandboxSessions(c *fox.Context, accountID string) error {

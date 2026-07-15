@@ -86,6 +86,8 @@ func (ctrl *Ctrl) RegisterRoutes(r *fox.Engine) {
 	api.GET("/code-runner/sessions", ctrl.CodeRunnerSessions)
 	api.POST("/code-runner/sessions", ctrl.CreateCodeRunnerSession)
 	api.POST("/code-runner/sessions/:sessionID/connect", ctrl.ConnectCodeRunnerSession)
+	api.POST("/code-runner/sessions/:sessionID/heartbeat", ctrl.CodeRunnerSessionHeartbeat)
+	api.POST("/code-runner/sessions/:sessionID/kill", ctrl.KillCodeRunnerSession)
 	api.GET("/code-runner/sessions/:sessionID/runs", ctrl.CodeRuns)
 	api.POST("/code-runner/sessions/:sessionID/runs", ctrl.RunCode)
 	api.POST("/repositories/:repositoryID/open", ctrl.OpenRepository)

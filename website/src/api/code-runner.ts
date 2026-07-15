@@ -2,6 +2,13 @@ import client from 'src/api/client'
 
 export type CodeRunnerLanguage = 'python' | 'javascript' | 'typescript' | 'r' | 'java' | 'bash'
 
+export interface CodeRunnerLatestRun {
+  language: CodeRunnerLanguage
+  succeeded: boolean
+  duration_ms: number
+  created_at: string
+}
+
 export interface CodeRunnerSession {
   id: string
   created_at?: string
@@ -13,6 +20,7 @@ export interface CodeRunnerSession {
   state?: string
   endpoint?: string
   workspace_path?: string
+  latest_run?: CodeRunnerLatestRun
 }
 
 export interface CodeRun {
@@ -52,6 +60,14 @@ export function createCodeRunnerSession(payload: CreateCodeRunnerSessionPayload)
 
 export function connectCodeRunnerSession(sessionID: string) {
   return client.post<CodeRunnerSession>(`/code-runner/sessions/${sessionID}/connect`)
+}
+
+export function heartbeatCodeRunnerSession(sessionID: string) {
+  return client.post<{ ok: boolean, timeout_seconds: number }>(`/code-runner/sessions/${sessionID}/heartbeat`)
+}
+
+export function killCodeRunnerSession(sessionID: string) {
+  return client.post<CodeRunnerSession>(`/code-runner/sessions/${sessionID}/kill`)
 }
 
 export function codeRuns(sessionID: string) {

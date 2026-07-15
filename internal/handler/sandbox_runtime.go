@@ -37,6 +37,7 @@ type sandboxRuntime interface {
 	RunAIChat(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeAIChatRequest) (*sandboxRuntimeAIChatResult, error)
 	RunCommand(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeCommandRequest) (*sandboxRuntimeCommandResult, error)
 	SetTimeout(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) error
+	Kill(ctx context.Context, apiKey, sandboxID, endpoint string) error
 	Pause(ctx context.Context, apiKey, sandboxID, endpoint string) error
 }
 
@@ -157,12 +158,13 @@ type sandboxRuntimeAIChatResult struct {
 }
 
 type sandboxRuntimeCommandRequest struct {
-	WorkspacePath string
-	Language      string
-	Code          string
-	Stdin         string
-	Envs          map[string]string
-	Timeout       time.Duration
+	WorkspacePath         string
+	Language              string
+	Code                  string
+	Stdin                 string
+	Envs                  map[string]string
+	Timeout               time.Duration
+	SandboxTimeoutSeconds int32
 }
 
 type sandboxRuntimeCommandResult struct {
@@ -330,6 +332,10 @@ func (r *qiniuSandboxRuntime) SetTimeout(ctx context.Context, apiKey, sandboxID,
 		return err
 	}
 	return r.doSandboxControlRequest(ctx, apiKey, endpoint, sandboxID, "timeout", bytes.NewReader(body), "application/json")
+}
+
+func (r *qiniuSandboxRuntime) Kill(ctx context.Context, apiKey, sandboxID, endpoint string) error {
+	return r.doSandboxRequest(ctx, apiKey, endpoint, sandboxID, http.MethodDelete, "", nil, "")
 }
 
 func (r *qiniuSandboxRuntime) Pause(ctx context.Context, apiKey, sandboxID, endpoint string) error {
@@ -525,7 +531,11 @@ func (r *qiniuSandboxRuntime) RunAIChat(ctx context.Context, apiKey, sandboxID, 
 }
 
 func (r *qiniuSandboxRuntime) RunCommand(ctx context.Context, apiKey, sandboxID, endpoint string, req sandboxRuntimeCommandRequest) (*sandboxRuntimeCommandResult, error) {
-	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, config.DefaultSandboxTimeoutSeconds)
+	sandboxTimeoutSeconds := req.SandboxTimeoutSeconds
+	if sandboxTimeoutSeconds <= 0 {
+		sandboxTimeoutSeconds = config.DefaultSandboxTimeoutSeconds
+	}
+	sb, err := r.connectSandbox(ctx, apiKey, sandboxID, endpoint, sandboxTimeoutSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -754,6 +764,10 @@ func sandboxMetricsURL(endpoint, sandboxID string, params sandboxMetricsParams) 
 }
 
 func (r *qiniuSandboxRuntime) doSandboxControlRequest(ctx context.Context, apiKey, endpoint, sandboxID, action string, body io.Reader, contentType string) error {
+	return r.doSandboxRequest(ctx, apiKey, endpoint, sandboxID, http.MethodPost, action, body, contentType)
+}
+
+func (r *qiniuSandboxRuntime) doSandboxRequest(ctx context.Context, apiKey, endpoint, sandboxID, method, action string, body io.Reader, contentType string) error {
 	if endpoint == "" {
 		endpoint = r.endpoint
 	}
@@ -761,7 +775,7 @@ func (r *qiniuSandboxRuntime) doSandboxControlRequest(ctx context.Context, apiKe
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), body)
+	req, err := http.NewRequestWithContext(ctx, method, requestURL.String(), body)
 	if err != nil {
 		return err
 	}
@@ -794,7 +808,11 @@ func sandboxControlURL(endpoint, sandboxID, action string) (*url.URL, error) {
 	if err != nil {
 		return nil, err
 	}
-	return baseURL.Parse("./sandboxes/" + url.PathEscape(sandboxID) + "/" + strings.TrimLeft(action, "/"))
+	requestPath := "./sandboxes/" + url.PathEscape(sandboxID)
+	if action != "" {
+		requestPath += "/" + strings.TrimLeft(action, "/")
+	}
+	return baseURL.Parse(requestPath)
 }
 
 func (r *qiniuSandboxRuntime) connectSandbox(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) (*qiniusb.Sandbox, error) {

@@ -7,33 +7,34 @@ import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Badge, Button, Card, Dialog, Flex, IconButton, Select, TextField } from '@radix-ui/themes'
 import CodeMirror, { EditorView } from '@uiw/react-codemirror'
-import type { CSSProperties, FormEvent, KeyboardEvent, PointerEvent } from 'react'
+import type { CSSProperties, FormEvent, KeyboardEvent, MouseEvent, PointerEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowLeft, Code2, History, LoaderCircle, Play, Plus, RotateCw } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Code2, History, LoaderCircle, Play, Plus } from 'lucide-react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 
 import { currentUser } from 'src/api/auth'
 import {
   codeRunnerSessions,
   codeRuns,
-  connectCodeRunnerSession,
   createCodeRunnerSession,
+  heartbeatCodeRunnerSession,
+  killCodeRunnerSession,
   runCode,
 } from 'src/api/code-runner'
-import type { CodeRun, CodeRunnerLanguage, CodeRunnerSession, RunCodePayload } from 'src/api/code-runner'
+import type { CodeRun, CodeRunnerLanguage, RunCodePayload } from 'src/api/code-runner'
 import { qiniuCredentialStatus } from 'src/api/qiniu'
 import { queryClient } from 'src/lib/query-client'
 
 const codeRunnerRegions = [
   {
-    id: 'cn-yangzhou-1',
-    label: 'China (Yangzhou 1)',
-    endpoint: 'https://cn-yangzhou-1-sandbox.qiniuapi.com',
-  },
-  {
     id: 'us-south-1',
     label: 'US (Dallas 1)',
     endpoint: 'https://us-south-1-sandbox.qiniuapi.com',
+  },
+  {
+    id: 'cn-yangzhou-1',
+    label: 'China (Yangzhou 1)',
+    endpoint: 'https://cn-yangzhou-1-sandbox.qiniuapi.com',
   },
 ]
 
@@ -86,6 +87,8 @@ echo "sqrt(144) = 12"
 
 const minCodeRunnerPaneHeight = 180
 const resultResizeHandleHeight = 6
+const codeRunnerHeartbeatIntervalMs = 60_000
+const codeRunnerIdleTimeoutMs = 30 * 60_000
 
 const codeEditorTheme = EditorView.theme({
   '&': { height: '100%', minHeight: '0', backgroundColor: 'transparent' },
@@ -178,21 +181,20 @@ function codeRunnerLanguageLabel(language: string) {
   return codeRunnerLanguages.find((item) => item.value === language)?.label ?? language
 }
 
+function formatCodeRunDuration(durationMS: number) {
+  if (durationMS < 1000) {
+    return `${durationMS} ms`
+  }
+  const seconds = durationMS / 1000
+  return `${seconds.toFixed(seconds < 10 ? 1 : 0).replace(/\.0$/, '')} s`
+}
+
 function codeRunSnippet(code: string) {
   return code.split('\n').map((line) => line.trim()).find(Boolean) || 'Empty code'
 }
 
 function codeRunStatusColor(run: CodeRun) {
   return run.exit_code === 0 && !run.error && !run.stderr ? 'green' : 'amber'
-}
-
-function SessionStateBadge({ session }: { session: CodeRunnerSession }) {
-  const running = session.state === 'running'
-  return (
-    <Badge color={running ? 'green' : 'gray'} variant="soft">
-      {session.state || 'unknown'}
-    </Badge>
-  )
 }
 
 function RunOutput({ run, running }: { run?: CodeRun; running: boolean }) {
@@ -465,7 +467,7 @@ function CodeRunnerList() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Code Runner</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Multi-language sessions backed by the code-interpreter-v1 sandbox template.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Multi-language coding sessions.</p>
         </div>
       </div>
 
@@ -520,7 +522,9 @@ function CodeRunnerList() {
         <section>
           <div className="flex items-center justify-between border-b pb-3">
             <h2 className="text-sm font-semibold">Sessions</h2>
-            <span className="text-xs text-muted-foreground">{sessions.length} sessions</span>
+            <span className="text-xs text-muted-foreground">
+              {sessions.length} {sessions.length === 1 ? 'session' : 'sessions'}
+            </span>
           </div>
           {sessionsQuery.isError ? (
             <div className="mt-3 rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">{apiErrorMessage(sessionsQuery.error)}</div>
@@ -536,14 +540,23 @@ function CodeRunnerList() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{session.name}</span>
-                      <SessionStateBadge session={session} />
+                      {session.latest_run ? (
+                        <Badge color="gray" variant="soft" size="1">
+                          {codeRunnerLanguageLabel(session.latest_run.language)}
+                        </Badge>
+                      ) : null}
                     </div>
                     <p className="mt-1 truncate text-xs text-muted-foreground">{regionLabel(session.region)}</p>
-                    <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{session.workspace_path || session.sandbox_id}</p>
                   </div>
-                  <div className="grid gap-1 text-xs text-muted-foreground sm:min-w-48 sm:text-right">
-                    <span>Template {session.template_id}</span>
-                    <span>Updated {formatDateTime(session.updated_at)}</span>
+                  <div className="text-xs text-muted-foreground sm:min-w-48 sm:text-right">
+                    {session.latest_run ? (
+                      <span>
+                        {session.latest_run.succeeded ? 'Succeeded' : 'Failed'} · {formatCodeRunDuration(session.latest_run.duration_ms)} ·{' '}
+                        {formatDateTime(session.latest_run.created_at)}
+                      </span>
+                    ) : (
+                      <span>Not run yet</span>
+                    )}
                   </div>
                 </Link>
               ))}
@@ -562,6 +575,7 @@ function CodeRunnerList() {
 
 function CodeRunnerDetail() {
   const { sessionId } = useParams()
+  const navigate = useNavigate()
   const [language, setLanguage] = useState<CodeRunnerLanguage>('python')
   const [codeByLanguage, setCodeByLanguage] = useState<Record<CodeRunnerLanguage, string>>(starterCode)
   const [resultPanelHeight, setResultPanelHeight] = useState<number | null>(null)
@@ -571,6 +585,10 @@ function CodeRunnerDetail() {
   const [selectedHistoryRunID, setSelectedHistoryRunID] = useState<string | null>(null)
   const splitLayoutRef = useRef<HTMLDivElement | null>(null)
   const dragCleanupRef = useRef<((isUnmounting?: boolean) => void) | null>(null)
+  const lastActivityAtRef = useRef(0)
+  const activeRunningSessionIDRef = useRef<string | null>(null)
+  const sandboxKillRequestedSessionIDsRef = useRef(new Set<string>())
+  const pendingRouteCleanupRef = useRef<{ sessionID: string, cancelled: boolean } | null>(null)
   const authQuery = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: currentUser,
@@ -587,22 +605,107 @@ function CodeRunnerDetail() {
     queryFn: () => codeRuns(sessionId || ''),
     enabled: Boolean(authQuery.data && sessionId),
   })
-  const connectSession = useMutation({
-    mutationFn: () => connectCodeRunnerSession(sessionId || ''),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['code-runner', 'sessions'] })
-    },
-  })
   const runMutation = useMutation({
     mutationFn: (payload: RunCodePayload) => runCode(sessionId || '', payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['code-runner', sessionId, 'runs'] })
+      void queryClient.invalidateQueries({ queryKey: ['code-runner', 'sessions'] })
     },
   })
 
   useEffect(() => () => {
     dragCleanupRef.current?.(true)
   }, [])
+
+  useEffect(() => {
+    const pendingCleanup = pendingRouteCleanupRef.current
+    const sandboxKillRequestedSessionIDs = sandboxKillRequestedSessionIDsRef.current
+    if (pendingCleanup && pendingCleanup.sessionID === sessionId) {
+      pendingCleanup.cancelled = true
+      pendingRouteCleanupRef.current = null
+    }
+
+    return () => {
+      const leavingSessionID = sessionId
+      if (!leavingSessionID ||
+        activeRunningSessionIDRef.current !== leavingSessionID ||
+        sandboxKillRequestedSessionIDs.has(leavingSessionID)) {
+        return
+      }
+      const cleanup = { sessionID: leavingSessionID, cancelled: false }
+      pendingRouteCleanupRef.current = cleanup
+      queueMicrotask(() => {
+        if (cleanup.cancelled) {
+          return
+        }
+        if (pendingRouteCleanupRef.current === cleanup) {
+          pendingRouteCleanupRef.current = null
+        }
+        if (sandboxKillRequestedSessionIDs.has(leavingSessionID)) {
+          return
+        }
+        sandboxKillRequestedSessionIDs.add(leavingSessionID)
+        void killCodeRunnerSession(leavingSessionID)
+          .catch(() => undefined)
+          .finally(() => {
+            void queryClient.invalidateQueries({ queryKey: ['code-runner', 'sessions'] })
+          })
+      })
+    }
+  }, [sessionId])
+
+  useEffect(() => {
+    const sessionRunning = Boolean(sessionId && session?.sandbox_id && session.state === 'running')
+    activeRunningSessionIDRef.current = sessionRunning ? sessionId ?? null : null
+    if (!sessionId || !sessionRunning) {
+      return undefined
+    }
+
+    let cancelled = false
+    lastActivityAtRef.current = Date.now()
+    sandboxKillRequestedSessionIDsRef.current.delete(sessionId)
+
+    const recordActivity = () => {
+      lastActivityAtRef.current = Date.now()
+    }
+
+    const maintainSandbox = () => {
+      if (cancelled || sandboxKillRequestedSessionIDsRef.current.has(sessionId)) {
+        return
+      }
+      if (Date.now() - lastActivityAtRef.current >= codeRunnerIdleTimeoutMs) {
+        sandboxKillRequestedSessionIDsRef.current.add(sessionId)
+        void killCodeRunnerSession(sessionId).then(() => {
+          void queryClient.invalidateQueries({ queryKey: ['code-runner', 'sessions'] })
+        }).catch(() => {
+          if (!cancelled) {
+            sandboxKillRequestedSessionIDsRef.current.delete(sessionId)
+          }
+        })
+        return
+      }
+      if (document.visibilityState === 'hidden') {
+        return
+      }
+      void heartbeatCodeRunnerSession(sessionId).catch(() => {})
+    }
+
+    window.addEventListener('pointerdown', recordActivity)
+    window.addEventListener('keydown', recordActivity)
+    document.addEventListener('input', recordActivity)
+    document.addEventListener('visibilitychange', maintainSandbox)
+    maintainSandbox()
+    const heartbeatTimer = window.setInterval(maintainSandbox, codeRunnerHeartbeatIntervalMs)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(heartbeatTimer)
+      window.removeEventListener('pointerdown', recordActivity)
+      window.removeEventListener('keydown', recordActivity)
+      document.removeEventListener('input', recordActivity)
+      document.removeEventListener('visibilitychange', maintainSandbox)
+    }
+  }, [session?.sandbox_id, session?.state, sessionId])
 
   const runs = useMemo(() => runsQuery.data?.data.runs ?? [], [runsQuery.data?.data.runs])
   const latestRun = runs[runs.length - 1]
@@ -638,8 +741,7 @@ function CodeRunnerDetail() {
   }
 
   const sessionRunning = Boolean(session.sandbox_id && session.state === 'running')
-  const showConnectAction = !sessionRunning || connectSession.isError
-  const canRun = Boolean(sessionRunning && code.trim() && !runMutation.isPending)
+  const canRun = Boolean(session.sandbox_id && code.trim() && !runMutation.isPending)
   const resultPanelHeightValue = resultPanelHeight === null ? '50%' : `${resultPanelHeight}px`
   const splitLayoutStyle = {
     '--code-runner-result-height': resultPanelHeightValue,
@@ -746,6 +848,21 @@ function CodeRunnerDetail() {
     setHistoryOpen(false)
   }
 
+  const handleBackToCodeRunner = (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault()
+    if (!sessionId || !sessionRunning) {
+      navigate('/code-runner')
+      return
+    }
+    sandboxKillRequestedSessionIDsRef.current.add(sessionId)
+    navigate('/code-runner')
+    void killCodeRunnerSession(sessionId)
+      .catch(() => undefined)
+      .finally(() => {
+        void queryClient.invalidateQueries({ queryKey: ['code-runner', 'sessions'] })
+      })
+  }
+
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background">
       <RunHistoryDialog
@@ -760,27 +877,21 @@ function CodeRunnerDetail() {
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             <IconButton asChild variant="ghost" color="gray" size="2" className="rounded-sm no-underline">
-              <Link to="/code-runner" aria-label="Back to Code Runner">
+              <Link to="/code-runner" aria-label="Back to Code Runner" onClick={handleBackToCodeRunner}>
                 <ArrowLeft className="h-4 w-4" />
               </Link>
             </IconButton>
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="truncate text-lg font-semibold">{session.name}</h1>
-                <SessionStateBadge session={session} />
-              </div>
-              <p className="mt-1 truncate text-xs text-muted-foreground">
-                {regionLabel(session.region)} · {session.template_id} · {session.workspace_path || session.sandbox_id}
-              </p>
+              <h1 className="truncate text-lg font-semibold">{session.name}</h1>
+              <p className="mt-1 truncate text-xs text-muted-foreground">{regionLabel(session.region)}</p>
             </div>
           </div>
           <Flex gap="2" wrap="wrap">
             <Button type="button" onClick={() => {
-              connectSession.reset()
               runMutation.mutate(currentRunPayload)
             }} disabled={!canRun}>
               {runMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Run
+              {runMutation.isError ? 'Retry' : 'Run'}
             </Button>
             <Button
               type="button"
@@ -792,26 +903,11 @@ function CodeRunnerDetail() {
               <History className="h-4 w-4" />
               History
             </Button>
-            {showConnectAction ? (
-              <Button
-                type="button"
-                variant="outline"
-                color="gray"
-                onClick={() => {
-                  runMutation.reset()
-                  connectSession.mutate()
-                }}
-                disabled={connectSession.isPending}
-              >
-                {connectSession.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
-                Connect
-              </Button>
-            ) : null}
           </Flex>
         </div>
-        {connectSession.isError || runMutation.isError ? (
+        {runMutation.isError ? (
           <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            {apiErrorMessage(connectSession.error || runMutation.error)}
+            {apiErrorMessage(runMutation.error)}
           </div>
         ) : null}
       </header>

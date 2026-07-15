@@ -13,6 +13,14 @@ if (!globalThis.ResizeObserver) {
   globalThis.ResizeObserver = TestResizeObserver
 }
 
+if (!Range.prototype.getClientRects) {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList
+}
+
+if (!Range.prototype.getBoundingClientRect) {
+  Range.prototype.getBoundingClientRect = () => new DOMRect()
+}
+
 vi.mock('react-dom/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-dom/client')>()
 

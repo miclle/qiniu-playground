@@ -292,3 +292,25 @@ func TestGetSandboxMetricsUsesReadOnlyAPI(t *testing.T) {
 		t.Fatalf("metrics = %+v, want decoded response", metrics)
 	}
 }
+
+func TestKillSandboxUsesDeleteAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodDelete || req.URL.Path != "/sandboxes/sandbox-2" {
+			t.Fatalf("request = %s %s, want DELETE /sandboxes/sandbox-2", req.Method, req.URL.Path)
+		}
+		if req.Header.Get("X-API-Key") != "api-key" || req.Header.Get("Authorization") != "Bearer api-key" {
+			t.Fatalf(
+				"auth headers = X-API-Key:%q Authorization:%q",
+				req.Header.Get("X-API-Key"),
+				req.Header.Get("Authorization"),
+			)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	runtime := &qiniuSandboxRuntime{}
+	if err := runtime.Kill(context.Background(), "api-key", "sandbox-2", server.URL); err != nil {
+		t.Fatalf("Kill() error = %v", err)
+	}
+}

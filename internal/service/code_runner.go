@@ -22,6 +22,10 @@ const (
 	CodeRunnerLanguageBash       = "bash"
 )
 
+// ErrCodeRunnerSessionChanged reports that a conditional session update lost
+// a race with another lifecycle operation.
+var ErrCodeRunnerSessionChanged = errors.New("code runner session changed")
+
 // IsSupportedCodeRunnerLanguage reports whether a language is supported by the
 // Code Runner surface. The list mirrors E2B Code Interpreter's built-in runtimes.
 func IsSupportedCodeRunnerLanguage(language string) bool {
@@ -50,6 +54,13 @@ type CodeRunnerSessionInput struct {
 	WorkspacePath string
 }
 
+// CodeRunnerSessionCondition identifies the session lifecycle snapshot that a
+// caller intends to replace.
+type CodeRunnerSessionCondition struct {
+	SandboxID string
+	State     string
+}
+
 // CodeRunInput is the normalized code execution payload.
 type CodeRunInput struct {
 	SessionID  string
@@ -63,6 +74,17 @@ type CodeRunInput struct {
 	ExitCode   int
 	DurationMS int64
 	Metadata   map[string]string
+}
+
+// CodeRunSummary contains only the fields needed by the Code Runner session
+// list. It intentionally excludes source code and command output.
+type CodeRunSummary struct {
+	SessionID  string
+	Language   string
+	ExitCode   int
+	Error      string
+	DurationMS int64
+	CreatedAt  time.Time
 }
 
 // SaveCodeRunnerSession stores a code runner session.
@@ -135,6 +157,61 @@ func (s *Service) SaveCodeRunnerSessionWithSandbox(
 	return session, nil
 }
 
+// UpdateCodeRunnerSessionWithSandboxIfCurrent atomically updates the Code
+// Runner and sandbox views only when the persisted lifecycle still matches the
+// caller's snapshot.
+func (s *Service) UpdateCodeRunnerSessionWithSandboxIfCurrent(
+	ctx context.Context,
+	accountID string,
+	condition CodeRunnerSessionCondition,
+	sessionInput CodeRunnerSessionInput,
+	sandboxInput SandboxSessionInput,
+) (*entity.CodeRunnerSession, error) {
+	if accountID == "" {
+		return nil, fmt.Errorf("account id is required")
+	}
+	if sessionInput.ID == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+	name := strings.TrimSpace(sessionInput.Name)
+	if name == "" {
+		name = "Untitled"
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&entity.CodeRunnerSession{}).
+			Where("account_id = ? AND id = ? AND sandbox_id = ? AND state = ?", accountID, sessionInput.ID, condition.SandboxID, condition.State).
+			Updates(map[string]any{
+				"name":           name,
+				"region":         sessionInput.Region,
+				"sandbox_id":     sessionInput.SandboxID,
+				"template_id":    sessionInput.TemplateID,
+				"state":          sessionInput.State,
+				"endpoint":       sessionInput.Endpoint,
+				"workspace_path": sessionInput.WorkspacePath,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update code runner session: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return ErrCodeRunnerSessionChanged
+		}
+
+		metadata := make(map[string]string, len(sandboxInput.Metadata)+1)
+		for key, value := range sandboxInput.Metadata {
+			metadata[key] = value
+		}
+		metadata["session_id"] = sessionInput.ID
+		sandboxInput.Metadata = metadata
+		_, err := (&Service{db: tx}).SaveSandboxSession(ctx, accountID, sandboxInput)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.CodeRunnerSession(ctx, accountID, sessionInput.ID)
+}
+
 // CodeRunnerSession returns a code runner session owned by an account.
 func (s *Service) CodeRunnerSession(ctx context.Context, accountID, sessionID string) (*entity.CodeRunnerSession, error) {
 	var session entity.CodeRunnerSession
@@ -158,6 +235,41 @@ func (s *Service) ListCodeRunnerSessions(ctx context.Context, accountID string) 
 		return nil, fmt.Errorf("list code runner sessions: %w", err)
 	}
 	return sessions, nil
+}
+
+// LatestCodeRuns returns the most recent code run for each session owned by an account.
+func (s *Service) LatestCodeRuns(ctx context.Context, accountID string) (map[string]CodeRunSummary, error) {
+	if accountID == "" {
+		return nil, fmt.Errorf("account id is required")
+	}
+	newerRun := s.db.Table("code_runs AS newer").
+		Select("1").
+		Where("newer.account_id = code_runs.account_id").
+		Where("newer.session_id = code_runs.session_id").
+		Where("newer.deleted_at IS NULL").
+		Where("(newer.created_at > code_runs.created_at OR (newer.created_at = code_runs.created_at AND newer.id > code_runs.id))")
+	var runs []CodeRunSummary
+	if err := s.db.WithContext(ctx).
+		Table("code_runs").
+		Select([]string{
+			"code_runs.session_id",
+			"code_runs.language",
+			"code_runs.exit_code",
+			"code_runs.error",
+			"code_runs.duration_ms",
+			"code_runs.created_at",
+		}).
+		Where("code_runs.account_id = ?", accountID).
+		Where("code_runs.deleted_at IS NULL").
+		Where("NOT EXISTS (?)", newerRun).
+		Find(&runs).Error; err != nil {
+		return nil, fmt.Errorf("list latest code runs: %w", err)
+	}
+	latestRuns := make(map[string]CodeRunSummary, len(runs))
+	for _, run := range runs {
+		latestRuns[run.SessionID] = run
+	}
+	return latestRuns, nil
 }
 
 // SaveCodeRun stores one code execution result.

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
@@ -15,18 +16,31 @@ import (
 )
 
 const (
-	defaultCodeRunTimeout      = 30 * time.Second
-	maxCodeRunTimeout          = 2 * time.Minute
-	codeRunnerProvisionTimeout = 2 * time.Minute
-	codeRunnerWriteTimeout     = 10 * time.Second
-	codeRunnerCleanupLifetime  = 60
-	maxCodeRunnerSessionName   = 100
+	defaultCodeRunTimeout                 = 30 * time.Second
+	maxCodeRunTimeout                     = 2 * time.Minute
+	codeRunnerProvisionTimeout            = 2 * time.Minute
+	codeRunnerWriteTimeout                = 10 * time.Second
+	codeRunnerSandboxTimeoutSeconds int32 = 30 * 60
+	codeRunnerCleanupLifetime             = 60
+	maxCodeRunnerSessionName              = 100
 )
 
 var codeRunnerSessionNamePattern = regexp.MustCompile(`^[A-Za-z0-9 _.-]+$`)
 
 type codeRunnerSessionsResponse struct {
 	Sessions []codeRunnerSessionResponse `json:"sessions"`
+}
+
+type codeRunnerLatestRunResponse struct {
+	Language   string    `json:"language"`
+	Succeeded  bool      `json:"succeeded"`
+	DurationMS int64     `json:"duration_ms"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type codeRunnerHeartbeatResponse struct {
+	OK             bool  `json:"ok"`
+	TimeoutSeconds int32 `json:"timeout_seconds"`
 }
 
 type codeRunnerSessionRequest struct {
@@ -42,16 +56,17 @@ type runCodeRequest struct {
 }
 
 type codeRunnerSessionResponse struct {
-	ID            string    `json:"id"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	Name          string    `json:"name"`
-	Region        string    `json:"region"`
-	SandboxID     string    `json:"sandbox_id,omitempty"`
-	TemplateID    string    `json:"template_id"`
-	State         string    `json:"state,omitempty"`
-	Endpoint      string    `json:"endpoint,omitempty"`
-	WorkspacePath string    `json:"workspace_path,omitempty"`
+	ID            string                       `json:"id"`
+	CreatedAt     time.Time                    `json:"created_at"`
+	UpdatedAt     time.Time                    `json:"updated_at"`
+	Name          string                       `json:"name"`
+	Region        string                       `json:"region"`
+	SandboxID     string                       `json:"sandbox_id,omitempty"`
+	TemplateID    string                       `json:"template_id"`
+	State         string                       `json:"state,omitempty"`
+	Endpoint      string                       `json:"endpoint,omitempty"`
+	WorkspacePath string                       `json:"workspace_path,omitempty"`
+	LatestRun     *codeRunnerLatestRunResponse `json:"latest_run,omitempty"`
 }
 
 type codeRunsResponse struct {
@@ -82,9 +97,25 @@ func (ctrl *Ctrl) CodeRunnerSessions(c *fox.Context) any {
 	if err != nil {
 		return err
 	}
+	if len(sessions) == 0 {
+		return codeRunnerSessionsResponse{Sessions: []codeRunnerSessionResponse{}}
+	}
+	latestRuns, err := ctrl.service.LatestCodeRuns(c.Request.Context(), accountID)
+	if err != nil {
+		return err
+	}
 	out := make([]codeRunnerSessionResponse, 0, len(sessions))
 	for _, session := range sessions {
-		out = append(out, codeRunnerSessionResponseFromEntity(session))
+		response := codeRunnerSessionResponseFromEntity(session)
+		if latestRun, ok := latestRuns[session.ID]; ok {
+			response.LatestRun = &codeRunnerLatestRunResponse{
+				Language:   latestRun.Language,
+				Succeeded:  latestRun.ExitCode == 0 && latestRun.Error == "",
+				DurationMS: latestRun.DurationMS,
+				CreatedAt:  latestRun.CreatedAt,
+			}
+		}
+		out = append(out, response)
 	}
 	return codeRunnerSessionsResponse{Sessions: out}
 }
@@ -123,7 +154,7 @@ func (ctrl *Ctrl) CreateCodeRunnerSession(c *fox.Context) any {
 	})
 	info, err := ctrl.sandboxRuntime.Create(c.Request.Context(), credentials.SandboxAPIKey, sandboxRuntimeCreateRequest{
 		TemplateID:      ctrl.codeInterpreterTemplateID,
-		TimeoutSeconds:  ctrl.defaultSandboxTimeoutSeconds,
+		TimeoutSeconds:  codeRunnerSandboxTimeoutSeconds,
 		PollingInterval: defaultSandboxPollInterval,
 		Endpoint:        req.Region,
 		Metadata:        metadata,
@@ -136,7 +167,7 @@ func (ctrl *Ctrl) CreateCodeRunnerSession(c *fox.Context) any {
 	defer cancelProvision()
 	runtimeWorkspace, err := ctrl.sandboxRuntime.PrepareWorkspace(provisionCtx, credentials.SandboxAPIKey, sandboxRuntimeWorkspaceRequest{
 		SandboxID:      info.SandboxID,
-		TimeoutSeconds: ctrl.defaultSandboxTimeoutSeconds,
+		TimeoutSeconds: codeRunnerSandboxTimeoutSeconds,
 		Endpoint:       req.Region,
 		WorkspacePath:  workspacePath,
 		IDEPassword:    ctrl.codeServerPassword(info.SandboxID),
@@ -193,7 +224,7 @@ func (ctrl *Ctrl) ConnectCodeRunnerSession(c *fox.Context) any {
 	if err != nil {
 		return err
 	}
-	info, err := ctrl.sandboxRuntime.Connect(c.Request.Context(), credentials.SandboxAPIKey, session.SandboxID, ctrl.defaultSandboxTimeoutSeconds, session.Region)
+	info, err := ctrl.sandboxRuntime.Connect(c.Request.Context(), credentials.SandboxAPIKey, session.SandboxID, codeRunnerSandboxTimeoutSeconds, session.Region)
 	if err != nil {
 		if isSandboxNotFoundError(err) {
 			return httperrors.New(http.StatusConflict, "code runner sandbox no longer exists")
@@ -205,7 +236,7 @@ func (ctrl *Ctrl) ConnectCodeRunnerSession(c *fox.Context) any {
 	defer cancelProvision()
 	runtimeWorkspace, err := ctrl.sandboxRuntime.PrepareWorkspace(provisionCtx, credentials.SandboxAPIKey, sandboxRuntimeWorkspaceRequest{
 		SandboxID:      info.SandboxID,
-		TimeoutSeconds: ctrl.defaultSandboxTimeoutSeconds,
+		TimeoutSeconds: codeRunnerSandboxTimeoutSeconds,
 		Endpoint:       session.Region,
 		WorkspacePath:  workspacePath,
 		IDEPassword:    ctrl.codeServerPassword(info.SandboxID),
@@ -240,6 +271,117 @@ func (ctrl *Ctrl) ConnectCodeRunnerSession(c *fox.Context) any {
 		return err
 	}
 	return codeRunnerSessionResponseFromEntity(*updated)
+}
+
+func (ctrl *Ctrl) CodeRunnerSessionHeartbeat(c *fox.Context) any {
+	accountID, err := ctrl.accountIDFromRequest(c)
+	if err != nil {
+		return httperrors.New(http.StatusUnauthorized, "unauthorized")
+	}
+	session, err := ctrl.codeRunnerSessionFromRequest(c, accountID)
+	if err != nil {
+		return err
+	}
+	if session.SandboxID == "" {
+		return httperrors.New(http.StatusPreconditionRequired, "code runner sandbox is not connected")
+	}
+	if !isSupportedCodeRunnerRegion(session.Region) {
+		return httperrors.New(http.StatusBadRequest, "unsupported code runner region")
+	}
+	credentials, err := ctrl.qiniuRuntimeCredentials(c, accountID)
+	if err != nil {
+		return err
+	}
+	if err := ctrl.sandboxRuntime.SetTimeout(
+		c.Request.Context(),
+		credentials.SandboxAPIKey,
+		session.SandboxID,
+		session.Region,
+		codeRunnerSandboxTimeoutSeconds,
+	); err != nil {
+		if isSandboxNotFoundError(err) {
+			return httperrors.New(http.StatusConflict, "code runner sandbox no longer exists")
+		}
+		return err
+	}
+	return codeRunnerHeartbeatResponse{OK: true, TimeoutSeconds: codeRunnerSandboxTimeoutSeconds}
+}
+
+func (ctrl *Ctrl) KillCodeRunnerSession(c *fox.Context) any {
+	accountID, err := ctrl.accountIDFromRequest(c)
+	if err != nil {
+		return httperrors.New(http.StatusUnauthorized, "unauthorized")
+	}
+	session, err := ctrl.codeRunnerSessionFromRequest(c, accountID)
+	if err != nil {
+		return err
+	}
+	credentials, err := ctrl.qiniuRuntimeCredentials(c, accountID)
+	if err != nil {
+		return err
+	}
+	for range 2 {
+		if session.State == "killed" {
+			return codeRunnerSessionResponseFromEntity(*session)
+		}
+		if session.SandboxID == "" {
+			return httperrors.New(http.StatusPreconditionRequired, "code runner sandbox is not connected")
+		}
+		if !isSupportedCodeRunnerRegion(session.Region) {
+			return httperrors.New(http.StatusBadRequest, "unsupported code runner region")
+		}
+		killCtx, cancelKill := codeRunnerWriteContext(c.Request.Context())
+		killErr := ctrl.sandboxRuntime.Kill(killCtx, credentials.SandboxAPIKey, session.SandboxID, session.Region)
+		cancelKill()
+		if killErr != nil && !isSandboxNotFoundError(killErr) {
+			return killErr
+		}
+		killedSandboxInput := service.SandboxSessionInput{
+			SandboxID:     session.SandboxID,
+			TemplateID:    session.TemplateID,
+			State:         "killed",
+			Endpoint:      session.Endpoint,
+			WorkspacePath: session.WorkspacePath,
+			Region:        session.Region,
+			Metadata: sandboxMetadata("code-runner", map[string]string{
+				"session_id":     session.ID,
+				"session_name":   session.Name,
+				"workspace_path": session.WorkspacePath,
+			}),
+		}
+		writeCtx, cancelWrite := codeRunnerWriteContext(c.Request.Context())
+		updated, updateErr := ctrl.service.UpdateCodeRunnerSessionWithSandboxIfCurrent(writeCtx, accountID, service.CodeRunnerSessionCondition{
+			SandboxID: session.SandboxID,
+			State:     session.State,
+		}, service.CodeRunnerSessionInput{
+			ID:            session.ID,
+			Name:          session.Name,
+			Region:        session.Region,
+			SandboxID:     session.SandboxID,
+			TemplateID:    session.TemplateID,
+			State:         "killed",
+			Endpoint:      session.Endpoint,
+			WorkspacePath: session.WorkspacePath,
+		}, killedSandboxInput)
+		cancelWrite()
+		if updateErr == nil {
+			return codeRunnerSessionResponseFromEntity(*updated)
+		}
+		if !errors.Is(updateErr, service.ErrCodeRunnerSessionChanged) {
+			return updateErr
+		}
+		staleWriteCtx, cancelStaleWrite := codeRunnerWriteContext(c.Request.Context())
+		_, staleWriteErr := ctrl.service.SaveSandboxSession(staleWriteCtx, accountID, killedSandboxInput)
+		cancelStaleWrite()
+		if staleWriteErr != nil {
+			return staleWriteErr
+		}
+		session, err = ctrl.service.CodeRunnerSession(c.Request.Context(), accountID, session.ID)
+		if err != nil {
+			return httperrors.New(http.StatusNotFound, "code runner session not found")
+		}
+	}
+	return httperrors.New(http.StatusConflict, "code runner session changed while stopping sandbox")
 }
 
 func (ctrl *Ctrl) CodeRuns(c *fox.Context) any {
@@ -302,15 +444,58 @@ func (ctrl *Ctrl) RunCode(c *fox.Context) any {
 	if err != nil {
 		return err
 	}
-	startedAt := time.Now()
-	result, err := ctrl.sandboxRuntime.RunCommand(c.Request.Context(), credentials.SandboxAPIKey, session.SandboxID, session.Region, sandboxRuntimeCommandRequest{
-		WorkspacePath: codeRunnerWorkspacePath(session),
-		Language:      req.Language,
-		Code:          req.Code,
-		Stdin:         req.Stdin,
-		Timeout:       timeout,
-	})
-	durationMS := time.Since(startedAt).Milliseconds()
+	activeSession := session
+	recreated := false
+	if session.State == "killed" {
+		activeSession, err = ctrl.recreateCodeRunnerSandbox(c.Request.Context(), accountID, credentials.SandboxAPIKey, session)
+		if err != nil {
+			return err
+		}
+		recreated = true
+	}
+	runInSession := func(current *entity.CodeRunnerSession) (*sandboxRuntimeCommandResult, int64, error) {
+		startedAt := time.Now()
+		result, runErr := ctrl.sandboxRuntime.RunCommand(c.Request.Context(), credentials.SandboxAPIKey, current.SandboxID, current.Region, sandboxRuntimeCommandRequest{
+			WorkspacePath:         codeRunnerWorkspacePath(current),
+			Language:              req.Language,
+			Code:                  req.Code,
+			Stdin:                 req.Stdin,
+			Timeout:               timeout,
+			SandboxTimeoutSeconds: codeRunnerSandboxTimeoutSeconds,
+		})
+		durationMS := time.Since(startedAt).Milliseconds()
+		var refreshErr error
+		if runErr == nil || !isSandboxNotFoundError(runErr) {
+			refreshCtx, cancelRefresh := codeRunnerWriteContext(c.Request.Context())
+			refreshErr = ctrl.sandboxRuntime.SetTimeout(
+				refreshCtx,
+				credentials.SandboxAPIKey,
+				current.SandboxID,
+				current.Region,
+				codeRunnerSandboxTimeoutSeconds,
+			)
+			cancelRefresh()
+		}
+		if refreshErr != nil {
+			c.Logger.Warnf("refresh code runner sandbox timeout: %v", refreshErr)
+		}
+		return result, durationMS, runErr
+	}
+	result, durationMS, err := runInSession(activeSession)
+	if err != nil && !recreated && isSandboxNotFoundError(err) {
+		current, loadErr := ctrl.service.CodeRunnerSession(c.Request.Context(), accountID, session.ID)
+		if loadErr != nil {
+			return httperrors.New(http.StatusNotFound, "code runner session not found")
+		}
+		if current.SandboxID != session.SandboxID || current.State != session.State {
+			return httperrors.New(http.StatusConflict, "code runner session changed while restoring sandbox")
+		}
+		activeSession, err = ctrl.recreateCodeRunnerSandbox(c.Request.Context(), accountID, credentials.SandboxAPIKey, current)
+		if err != nil {
+			return err
+		}
+		result, durationMS, err = runInSession(activeSession)
+	}
 	if err != nil {
 		return err
 	}
@@ -318,7 +503,7 @@ func (ctrl *Ctrl) RunCode(c *fox.Context) any {
 	defer cancelWrite()
 	run, err := ctrl.service.SaveCodeRun(writeCtx, accountID, service.CodeRunInput{
 		SessionID:  session.ID,
-		SandboxID:  session.SandboxID,
+		SandboxID:  activeSession.SandboxID,
 		Language:   req.Language,
 		Code:       req.Code,
 		Stdin:      req.Stdin,
@@ -332,6 +517,76 @@ func (ctrl *Ctrl) RunCode(c *fox.Context) any {
 		return err
 	}
 	return codeRunResponseFromEntity(*run)
+}
+
+func (ctrl *Ctrl) recreateCodeRunnerSandbox(
+	ctx context.Context,
+	accountID string,
+	apiKey string,
+	session *entity.CodeRunnerSession,
+) (*entity.CodeRunnerSession, error) {
+	metadata := sandboxMetadata("code-runner", map[string]string{
+		"session_name": session.Name,
+		"region":       session.Region,
+	})
+	info, err := ctrl.sandboxRuntime.Create(ctx, apiKey, sandboxRuntimeCreateRequest{
+		TemplateID:      session.TemplateID,
+		TimeoutSeconds:  codeRunnerSandboxTimeoutSeconds,
+		PollingInterval: defaultSandboxPollInterval,
+		Endpoint:        session.Region,
+		Metadata:        metadata,
+	})
+	if err != nil {
+		return nil, err
+	}
+	workspacePath := codeRunnerWorkspacePath(session)
+	provisionCtx, cancelProvision := codeRunnerProvisionContext(ctx)
+	defer cancelProvision()
+	runtimeWorkspace, err := ctrl.sandboxRuntime.PrepareWorkspace(provisionCtx, apiKey, sandboxRuntimeWorkspaceRequest{
+		SandboxID:      info.SandboxID,
+		TimeoutSeconds: codeRunnerSandboxTimeoutSeconds,
+		Endpoint:       session.Region,
+		WorkspacePath:  workspacePath,
+		IDEPassword:    ctrl.codeServerPassword(info.SandboxID),
+	})
+	if err != nil {
+		ctrl.shortenCodeRunnerSandboxLifetime(apiKey, info.SandboxID, session.Region)
+		return nil, err
+	}
+	writeCtx, cancelWrite := codeRunnerWriteContext(ctx)
+	defer cancelWrite()
+	updated, err := ctrl.service.UpdateCodeRunnerSessionWithSandboxIfCurrent(writeCtx, accountID, service.CodeRunnerSessionCondition{
+		SandboxID: session.SandboxID,
+		State:     session.State,
+	}, service.CodeRunnerSessionInput{
+		ID:            session.ID,
+		Name:          session.Name,
+		Region:        session.Region,
+		SandboxID:     runtimeWorkspace.SandboxID,
+		TemplateID:    runtimeWorkspace.TemplateID,
+		State:         runtimeWorkspace.State,
+		Endpoint:      runtimeWorkspace.Endpoint,
+		WorkspacePath: runtimeWorkspace.WorkspacePath,
+	}, service.SandboxSessionInput{
+		SandboxID:     runtimeWorkspace.SandboxID,
+		TemplateID:    runtimeWorkspace.TemplateID,
+		State:         runtimeWorkspace.State,
+		Endpoint:      runtimeWorkspace.Endpoint,
+		WorkspacePath: runtimeWorkspace.WorkspacePath,
+		Region:        session.Region,
+		Metadata: sandboxMetadata("code-runner", map[string]string{
+			"session_name":   session.Name,
+			"workspace_path": runtimeWorkspace.WorkspacePath,
+		}),
+	})
+	if err != nil {
+		ctrl.shortenCodeRunnerSandboxLifetime(apiKey, runtimeWorkspace.SandboxID, session.Region)
+		if errors.Is(err, service.ErrCodeRunnerSessionChanged) {
+			return nil, httperrors.New(http.StatusConflict, "code runner session changed while restoring sandbox")
+		}
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (ctrl *Ctrl) shortenCodeRunnerSandboxLifetime(apiKey, sandboxID, region string) {

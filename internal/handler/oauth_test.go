@@ -42,6 +42,7 @@ type fakeSandboxRuntime struct {
 	lastTemplatesEndpoint   string
 	lastListEndpoint        string
 	lastConnectEndpoint     string
+	lastConnectTimeout      int32
 	lastPTYEndpoint         string
 	lastFilesystemEndpoint  string
 	lastFilesystemPath      string
@@ -54,6 +55,13 @@ type fakeSandboxRuntime struct {
 	lastTimeoutSandboxID    string
 	lastTimeoutEndpoint     string
 	lastTimeoutSeconds      int32
+	lastTimeoutContextErr   error
+	timeoutCalls            int
+	lastKillEndpoint        string
+	lastKilledSandboxID     string
+	lastKillContextErr      error
+	killedSandboxIDs        []string
+	onKill                  func(string)
 	lastPauseEndpoint       string
 	lastPausedSandboxID     string
 	lastRepo                string
@@ -70,6 +78,9 @@ type fakeSandboxRuntime struct {
 	aiChatOutputChunks      []string
 	commandResult           *sandboxRuntimeCommandResult
 	commandErr              error
+	commandErrors           []error
+	commandSandboxIDs       []string
+	onRunCommand            func()
 	workspaceErr            error
 	onPrepareWorkspace      func()
 	lastWorkspaceContextErr error
@@ -156,6 +167,7 @@ func (f *fakeSandboxRuntime) Create(ctx context.Context, apiKey string, req sand
 func (f *fakeSandboxRuntime) Connect(ctx context.Context, apiKey, sandboxID string, timeoutSeconds int32, endpoint string) (*sandboxRuntimeInfo, error) {
 	f.lastAPIKey = apiKey
 	f.lastConnectEndpoint = endpoint
+	f.lastConnectTimeout = timeoutSeconds
 	if f.connectErr != nil {
 		return nil, f.connectErr
 	}
@@ -286,6 +298,17 @@ func (f *fakeSandboxRuntime) RunCommand(ctx context.Context, apiKey, sandboxID, 
 	f.lastAPIKey = apiKey
 	f.lastCommandEndpoint = endpoint
 	f.lastCommandRequest = req
+	f.commandSandboxIDs = append(f.commandSandboxIDs, sandboxID)
+	if f.onRunCommand != nil {
+		f.onRunCommand()
+	}
+	if len(f.commandErrors) > 0 {
+		err := f.commandErrors[0]
+		f.commandErrors = f.commandErrors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if f.commandErr != nil {
 		return nil, f.commandErr
 	}
@@ -300,10 +323,24 @@ func (f *fakeSandboxRuntime) RunCommand(ctx context.Context, apiKey, sandboxID, 
 }
 
 func (f *fakeSandboxRuntime) SetTimeout(ctx context.Context, apiKey, sandboxID, endpoint string, timeoutSeconds int32) error {
+	f.timeoutCalls++
 	f.lastAPIKey = apiKey
 	f.lastTimeoutSandboxID = sandboxID
 	f.lastTimeoutEndpoint = endpoint
 	f.lastTimeoutSeconds = timeoutSeconds
+	f.lastTimeoutContextErr = ctx.Err()
+	return nil
+}
+
+func (f *fakeSandboxRuntime) Kill(ctx context.Context, apiKey, sandboxID, endpoint string) error {
+	f.lastAPIKey = apiKey
+	f.lastKilledSandboxID = sandboxID
+	f.lastKillEndpoint = endpoint
+	f.killedSandboxIDs = append(f.killedSandboxIDs, sandboxID)
+	if f.onKill != nil {
+		f.onKill(sandboxID)
+	}
+	f.lastKillContextErr = ctx.Err()
 	return nil
 }
 
